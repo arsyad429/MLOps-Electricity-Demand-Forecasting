@@ -1,0 +1,26 @@
+model:
+  default: xgboost
+
+training:
+  random_seed: 42
+
+features:
+  lag_hours:
+    - 1
+    - 2
+    - 3
+    - 6
+    - 12
+    - 24
+    - 48
+    - 168
+  rolling_windows:
+    - 3
+    - 6
+    - 24
+
+evaluation:
+  metrics:
+    - mae
+    - rmse
+    - wape

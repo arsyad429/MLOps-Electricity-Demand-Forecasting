@@ -1,0 +1,13 @@
+source:
+  provider: eia
+  route: electricity/rto/region-data
+
+region:
+  respondent: CISO
+  metric: D
+
+frequency: hourly
+
+target:
+  horizon: 1
+  unit: hour
