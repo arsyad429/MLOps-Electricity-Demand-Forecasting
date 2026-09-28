@@ -1,20 +1,10 @@
 # Electricity Demand Forecasting with MLOps
 
-> **Status: INITIAL PROJECT SCAFFOLD**
+> **Status:** data ingestion dan preprocessing dasar sudah tersedia; training model, API, dashboard, dan monitoring masih dalam pengembangan.
 
 ## Project Overview
 
-Project ini menyiapkan fondasi repository untuk melakukan forecasting permintaan listrik satu jam ke depan menggunakan machine learning dan praktik MLOps. Fokus data adalah Balancing Authority **CISO** dengan frekuensi hourly UTC.
-
-### Tujuan Awal
-
-Tahap saat ini berfokus pada repository yang rapi, aman, dan mudah dikembangkan bersama. Struktur ini memisahkan data, konfigurasi, eksperimen notebook, reusable source code, artifact model, dokumentasi, serta komponen backend dan frontend yang akan dibuat pada tahap berikutnya.
-
-Repository ini **belum** menjalankan data ingestion, feature engineering, model training, API, atau dashboard. Seluruh komponen tersebut masih berupa rencana arsitektur.
-
-## Problem Statement
-
-Kebutuhan listrik berubah dari jam ke jam. Project ini akan membangun fondasi untuk memprediksi nilai demand berikutnya agar hasil forecast dapat dipakai sebagai dasar analisis dan pengambilan keputusan operasional di masa depan.
+Project ini membangun sistem forecasting permintaan listrik satu jam ke depan menggunakan machine learning dan praktik MLOps. Data yang digunakan adalah demand listrik **California ISO (CISO)** dengan frekuensi hourly dalam UTC.
 
 ## ML Task
 
@@ -26,139 +16,147 @@ Kebutuhan listrik berubah dari jam ke jam. Project ini akan membangun fondasi un
 
 ## Data Source
 
-Sumber data yang direncanakan adalah [U.S. Energy Information Administration Open Data API v2](https://www.eia.gov/opendata/), menggunakan dataset *Hourly Demand, Demand Forecast, Generation, and Interchange* melalui route `electricity/rto/region-data`.
-
-## Technology Stack
-
-Teknologi yang direncanakan untuk tahap selanjutnya:
-
-- Python 3.11 untuk data dan machine learning
-- pandas, NumPy, scikit-learn, XGBoost, dan LightGBM
-- FastAPI untuk model serving dan REST API
-- React + Vite untuk dashboard
-- MLflow untuk experiment tracking
-- pytest untuk testing
-- GitHub Actions untuk continuous integration
+Data diambil dari [U.S. Energy Information Administration Open Data API v2](https://www.eia.gov/opendata/) melalui route `electricity/rto/region-data`. Pengumpul data meminta field `value`, respondent `CISO`, dan type `D`, kemudian mengurutkan hasil berdasarkan `period` secara ascending.
 
 ## Repository Structure
 
-Struktur direktori dibagi berdasarkan tanggung jawab agar eksperimen dan kode production-ready tidak tercampur:
-
-- `config/` menyimpan konfigurasi non-rahasia untuk data, model, dan pipeline.
-- `data/` menyimpan data berdasarkan tahapnya: raw, interim, processed, dan external.
-- `notebooks/` adalah lokasi untuk EDA, eksperimen, dan pemeriksaan API berbasis Jupyter.
-- `src/` dicadangkan untuk reusable Python modules saat implementasi dimulai.
-- `scripts/` dicadangkan untuk executable/helper scripts yang dijalankan langsung.
-- `models/` menyimpan artifact model lokal yang tidak di-commit.
-- `backend/` dan `frontend/` dicadangkan untuk FastAPI serta dashboard React + Vite.
-- `tests/`, `docs/`, `.devcontainer/`, dan `.github/` mendukung quality checks, dokumentasi, Codespaces, dan CI.
-
 ```text
 MLOps-Electricity Demand Forecasting/
-├── .devcontainer/              # GitHub Codespaces configuration
-├── .github/workflows/          # Continuous integration workflow
-├── frontend/                   # Future React + Vite dashboard
 ├── backend/                    # Future FastAPI service
+├── config/                     # Konfigurasi data, model, dan pipeline
 ├── data/
-│   ├── raw/                    # Source data, not committed
-│   ├── interim/                # Intermediate data, not committed
-│   ├── processed/              # Prepared data, not committed
-│   └── external/               # External data, not committed
-├── models/                     # Model artifacts, not committed
-├── notebooks/                  # Experiment notebooks and future EDA
+│   ├── raw/                    # Respons API dalam format CSV
+│   ├── interim/                # Data setelah preprocessing dasar
+│   ├── processed/              # Data siap digunakan model
+│   └── external/               # Data dari sumber eksternal lain
+├── frontend/                   # Future React + Vite dashboard
+├── models/                     # Model artifacts lokal
+├── notebooks/                  # EDA dan eksperimen
+├── scripts/                    # Lokasi utilitas operasional mendatang
 ├── src/
-│   ├── data/                   # Future ingestion and validation
-│   ├── features/               # Future feature engineering
-│   ├── models/                 # Future training, prediction, evaluation
-│   ├── pipelines/              # Future orchestration
-│   └── monitoring/             # Future monitoring
-├── config/                     # Declarative project configuration
-├── tests/                      # Future unit and integration tests
-├── scripts/                    # Future operational utilities
-├── docs/                       # Project documentation
-├── .env.example                # Environment-variable template
-├── .gitignore
-├── .python-version
-├── requirements.txt
-├── pyproject.toml
-└── README.md
+│   ├── data/                   # Client EIA dan fungsi preprocessing
+│   └── pipelines/              # Entry point pengumpulan dan preprocessing data
+└── tests/                      # Automated tests
 ```
 
-## GitHub Codespaces
+Dokumentasi lebih rinci untuk komponen pengumpulan data tersedia di [`src/data/README.md`](src/data/README.md) dan [`src/pipelines/README.md`](src/pipelines/README.md).
 
-Repository ini menyediakan development container untuk GitHub Codespaces dengan Python 3.11, Node.js 20, ekstensi VS Code yang diperlukan, serta forwarded ports 8000, 5173, dan 5000.
+## Persiapan Environment
 
-### Menjalankan di GitHub Codespaces
+Jalankan seluruh perintah dari root repository. Project memerlukan Python 3.11 atau yang kompatibel.
 
-1. Buka repository di GitHub.
-2. Pilih **Code** > **Codespaces** > **Create codespace on main**.
-3. Tunggu proses container setup selesai. Codespaces akan menjalankan perintah berikut secara otomatis:
-
-```bash
-pip install -r requirements.txt
-```
-
-4. Jika diperlukan pada tahap berikutnya, salin `.env.example` menjadi `.env` dan isi credential hanya di environment lokal Codespace.
-5. Mulai bekerja dari notebook di `notebooks/` atau dokumentasi project. Port 8000, 5173, dan 5000 telah disiapkan untuk komponen masa depan.
-
-Tidak ada backend server, frontend application, pipeline ML, atau `npm install` yang dijalankan selama setup initial scaffold ini.
-
-## Local Development
-
-Create and activate a virtual environment, then install the planned dependencies:
+### PowerShell (Windows)
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
 ```
 
-This setup does not run a pipeline, model, API, or dashboard.
+### Bash (Linux, macOS, atau Codespaces)
 
-## Environment Variables
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+cp .env.example .env
+```
 
-Copy `.env.example` to `.env` and provide the EIA API key locally:
+Isi API key EIA di `.env`:
+
+```dotenv
+EIA_API_KEY=your_eia_api_key_here
+```
+
+API key dapat diperoleh dari halaman [EIA Open Data](https://www.eia.gov/opendata/register.php). File `.env` diabaikan oleh Git; jangan commit credential ke repository.
+
+## Menjalankan Pengumpul Data
+
+Sebelum eksekusi pertama, buat subfolder output. Folder ini tidak ikut di-commit karena berisi data hasil unduhan.
+
+PowerShell:
+
+```powershell
+New-Item -ItemType Directory -Force data/raw/historical, data/raw/inference
+```
+
+Bash:
+
+```bash
+mkdir -p data/raw/historical data/raw/inference
+```
+
+### 1. Mengumpulkan data historis untuk training
+
+```powershell
+python -m src.pipelines.save_train_historical_data
+```
+
+Secara default, pipeline mengambil data per tahun mulai 2019 sampai tahun UTC saat ini. Setiap tahun dibagi menjadi dua request agar jumlah record per request tetap berada dalam batas API. File disimpan sebagai:
 
 ```text
-EIA_API_KEY=your_eia_api_key_here
-DATABASE_URL=
+data/raw/historical/ciso_historical_<YYYYMMDDTHHMMSSZ>.csv
 ```
 
-The `.env` file is intentionally ignored by Git. Do not commit credentials.
+Untuk memilih rentang tahun tertentu, panggil fungsinya secara langsung. Kedua batas tahun bersifat inklusif:
+
+```powershell
+python -c "from src.pipelines.save_train_historical_data import save_ciso_train_df; save_ciso_train_df(2022, 2024)"
+```
+
+### 2. Mengumpulkan data terbaru untuk inference
+
+```powershell
+python -m src.pipelines.save_inference_data
+```
+
+Pipeline inference meminta data mulai jam UTC saat command dijalankan dan menyimpannya sebagai:
+
+```text
+data/raw/inference/ciso_inference_<YYYYMMDDTHHMMSSZ>.csv
+```
+
+Karena publikasi data EIA dapat tertunda, respons pada jam terbaru mungkin kosong. Coba jalankan kembali setelah data tersedia.
+
+### Verifikasi hasil
+
+PowerShell:
+
+```powershell
+Get-ChildItem data/raw/historical, data/raw/inference -Filter *.csv
+```
+
+Bash:
+
+```bash
+find data/raw/historical data/raw/inference -name '*.csv'
+```
+
+Nama file memakai timestamp UTC agar eksekusi berikutnya tidak menimpa hasil sebelumnya. Respons HTTP yang gagal, API key yang tidak valid, atau koneksi yang timeout akan menghentikan command dan menampilkan exception.
+
+## Preprocessing Dasar
+
+Modul preprocessing mengubah `period` menjadi datetime UTC, mengubah `value` menjadi numerik, membuang duplikat dan nilai kosong, lalu mengurutkan data berdasarkan waktu. Untuk data training, modul juga membentuk kolom target `target_demand_1h` menggunakan demand pada baris satu jam berikutnya.
+
+Fungsi preprocessing saat ini dipanggil dari Python dan belum mempunyai CLI tersendiri. Contoh penggunaan tersedia di [`src/pipelines/README.md`](src/pipelines/README.md).
+
+## GitHub Codespaces
+
+Repository menyediakan development container dengan Python 3.11. Setelah Codespace selesai dibuat, salin `.env.example` menjadi `.env`, isi `EIA_API_KEY` melalui secret Codespaces atau file lokal yang tidak di-commit, lalu jalankan modul pipeline dengan command yang sama seperti di atas.
 
 ## Security / Secret Management
 
-Secrets are never stored in `config/`, source modules, CI configuration, or documentation. Use `.env` only for local development and keep it untracked; `.env.example` contains placeholders only.
-
-## Branching Strategy
-
-Project ini menggunakan GitHub Flow. Semua perubahan dibuat pada feature branch, direview melalui pull request, divalidasi oleh CI, lalu di-merge ke `main`.
-
-```mermaid
-flowchart TD
-    MAIN[main] --> FEATURE[feat/initial-eda]
-    FEATURE --> DEVELOPMENT[development]
-    DEVELOPMENT --> VALIDATION[validation]
-    VALIDATION --> PR[Pull Request]
-    PR --> MAIN
-```
-
-Branch eksperimen pertama yang direncanakan adalah `feat/initial-eda`. Branch tersebut belum dibuat secara otomatis oleh scaffold ini.
-
-## Data Management
-
-Folder `data/raw`, `data/interim`, `data/processed`, dan `data/external` disiapkan untuk data pada tahap berikutnya. Isi data dan artifact model tidak di-commit; hanya file `.gitkeep` yang menjaga struktur direktori.
-
-API key tidak ditempatkan dalam file konfigurasi. Simpan nilai rahasia hanya dalam `.env` lokal atau secret manager pada tahap deployment.
+Simpan secret hanya di `.env` lokal, GitHub Codespaces secrets, atau secret manager pada environment deployment. Jangan menaruh API key di `config/`, source code, notebook, CI configuration, atau dokumentasi.
 
 ## Development Roadmap
 
-1. Initial project scaffold — selesai pada tahap ini.
-2. Exploratory data analysis — rencana berikutnya menggunakan notebook yang tersimpan di `notebooks/`.
-3. Data ingestion, data validation, dan feature engineering.
-4. Model training, prediction, dan evaluation.
-5. Backend API dan frontend dashboard.
-6. MLOps workflow, monitoring, drift detection, dan automated retraining.
+1. Initial project scaffold — selesai.
+2. Exploratory data analysis — tersedia di folder `notebooks/`.
+3. Data ingestion dan preprocessing dasar — sudah diimplementasikan.
+4. Data validation dan feature engineering.
+5. Model training, prediction, dan evaluation.
+6. Backend API, frontend dashboard, monitoring, dan automated retraining.
 
 ## Project Architecture
 
@@ -174,4 +172,4 @@ flowchart LR
     MONITOR -. Future feedback loop .-> VALIDATE
 ```
 
-Seluruh komponen pada diagram tersebut adalah arsitektur masa depan dan belum diimplementasikan pada repository ini.
+Saat ini bagian yang telah tersedia adalah pengambilan data dari EIA dan preprocessing dasar. Komponen sesudahnya pada diagram masih merupakan target pengembangan.

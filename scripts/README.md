@@ -1,5 +1,14 @@
 # Scripts
 
-Folder ini akan digunakan untuk script operasional dan utilitas pengembangan yang akan ditambahkan pada tahap berikutnya.
+Folder `scripts/` belum berisi executable source code. Entry point pengumpul data yang aktif berada di `src/pipelines/` agar dapat memakai reusable module dari package `src`.
 
-Tidak ada script implementasi pada tahap initial project scaffold ini.
+Jalankan dari root repository:
+
+```powershell
+python -m src.pipelines.save_train_historical_data
+python -m src.pipelines.save_inference_data
+```
+
+Dokumentasi lengkap mengenai setup, output, pemilihan rentang tahun, dan preprocessing tersedia di [`../src/pipelines/README.md`](../src/pipelines/README.md).
+
+File di `scripts/__pycache__/`, jika ada secara lokal, hanyalah bytecode Python dan bukan script yang perlu dijalankan atau di-commit.

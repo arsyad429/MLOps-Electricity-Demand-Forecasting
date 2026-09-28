@@ -12,3 +12,4 @@ fastapi
 uvicorn
 mlflow
 pytest
+dotenv
