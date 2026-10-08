@@ -2,7 +2,7 @@ import os
 from dotenv import load_dotenv
 import requests
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -59,12 +59,18 @@ def get_ciso_EIA_data(
         params["end"] = end_date
 
     else:
-        current_date_hour = (
-            datetime.now(timezone.utc)
-            .strftime("%Y-%m-%dT%H")
+        current_time = datetime.now(timezone.utc)
+
+        start_date = (
+            current_time - timedelta(hours=3)
+        ).strftime("%Y-%m-%dT%H")
+
+        end_date = current_time.strftime(
+            "%Y-%m-%dT%H"
         )
 
-        params["start"] = current_date_hour
+        params["start"] = start_date
+        params["end"] = end_date    
 
     response = requests.get(
         DATA_URL,
@@ -84,6 +90,11 @@ def save_raw_data(df, prefix):
     output_path = (
         OUTPUT_DIR
         / f"{prefix}_{timestamp}.csv"
+    )
+
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True
     )
 
     df.to_csv(

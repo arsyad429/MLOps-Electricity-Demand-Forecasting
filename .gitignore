@@ -15,6 +15,9 @@ venv/
 
 # Data and model artifacts
 data/raw/*
+data/interim/*
+data/processed/*
+data/external/*
 !data/raw/.gitkeep
 data/interim/*
 !data/interim/.gitkeep
