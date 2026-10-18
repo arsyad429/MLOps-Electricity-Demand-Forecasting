@@ -33,3 +33,18 @@ def preprocess_train_data(file_path):
     )
 
     return output_path
+
+if __name__ == "__main__":
+    input_path = (
+        RAW_DIR
+        / "ciso_historical.csv"
+    )
+
+    output_path = preprocess_train_data(
+        input_path
+    )
+
+    print(
+        f"Preprocessed data saved to: "
+        f"{output_path}"
+    )

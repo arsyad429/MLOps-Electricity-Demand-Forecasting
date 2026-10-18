@@ -75,7 +75,7 @@ def get_ciso_EIA_data(
     response = requests.get(
         DATA_URL,
         params=params,
-        timeout=30
+        timeout=120
     )
 
     response.raise_for_status()
