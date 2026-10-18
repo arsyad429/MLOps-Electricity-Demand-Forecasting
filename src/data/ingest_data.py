@@ -89,7 +89,7 @@ def save_raw_data(df, prefix):
 
     output_path = (
         OUTPUT_DIR
-        / f"{prefix}_{timestamp}.csv"
+        / f"{prefix}.csv"
     )
 
     output_path.parent.mkdir(
