@@ -44,3 +44,8 @@ frontend/dist/
 .idea/
 .DS_Store
 Thumbs.db
+
+# MLflow local tracking
+mlflow.db
+mlflow.db-*
+mlartifacts/
