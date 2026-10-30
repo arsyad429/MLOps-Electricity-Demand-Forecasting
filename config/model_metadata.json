@@ -1,0 +1,26 @@
+{
+    "model_name": "CISO-Demand-Forecaster",
+    "model_version": 3,
+    "model_alias": "champion",
+    "model_uri": "models:/CISO-Demand-Forecaster@champion",
+    "algorithm": "xgboost",
+    "dataset_dvc_md5": "d3310fb5fbb2ecde8e19cdc903d96071",
+    "best_hyperparameters": {
+        "n_estimators": "600",
+        "learning_rate": "0.13122696132655073",
+        "max_depth": "8",
+        "subsample": "0.7427164669979076",
+        "colsample_bytree": "0.9042974171824989",
+        "reg_lambda": "4.596715108512184",
+        "random_state": "42",
+        "n_features": "10"
+    },
+    "metrics": {
+        "val_mae": 720.9335618519871,
+        "val_rmse": 1028.9678664346486,
+        "val_wape": 2.736234065813215,
+        "test_mae": 975.0486785239361,
+        "test_rmse": 1380.090969905353,
+        "test_wape": 3.5917329229928234
+    }
+}
