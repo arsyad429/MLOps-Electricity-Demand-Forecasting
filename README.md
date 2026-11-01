@@ -6,6 +6,12 @@
 
 Project ini membangun sistem forecasting permintaan listrik satu jam ke depan menggunakan machine learning dan praktik MLOps. Data yang digunakan adalah demand listrik **California ISO (CISO)** dengan frekuensi hourly dalam UTC.
 
+## Model Aktif untuk Inferensi
+
+Berdasarkan [metadata lifecycle LK-07](artifacts/lk07/model_lineage.json), model aktif untuk inferensi adalah **XGBoost versi 2** pada registry `CISO-Demand-Forecaster-LK07`, dengan stage **Production** dan alias **`champion`**. Model dimuat melalui URI `models:/CISO-Demand-Forecaster-LK07@champion` untuk memprediksi demand listrik **t+2 jam**. Metadata v3 di [`config/model_metadata.json`](config/model_metadata.json) berasal dari eksperimen sebelumnya (`CISO-Demand-Forecaster`); model tersebut menjadi sumber v1 LK-07.
+
+V2 merupakan hasil retraining dengan `n_estimators` diturunkan dari 600 menjadi 550 pada dataset yang sama. Dibandingkan v1, MAE validasi turun dari **720,93 menjadi 715,19** dan WAPE dari **2,736% menjadi 2,714%**, sehingga mendukung penggunaannya sebagai versi Production. Namun, RMSE validasi sedikit naik dari **1.028,97 menjadi 1.030,16**; pemilihan v2 memiliki tradeoff dan bukan peningkatan pada semua metrik. Inferensi yang tersedia saat ini berupa verifikasi menggunakan sampel historis melalui `src/models/registry.py`, sementara API serving masih dalam pengembangan.
+
 ## ML Task
 
 - Tipe tugas: time-series regression
