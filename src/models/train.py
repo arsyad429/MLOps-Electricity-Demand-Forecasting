@@ -321,14 +321,24 @@ def train(n_trials, tracking_uri, ci_mode=False):
         results.append(result)
 
     # Pilih pemenang dari validation, bukan test.
+    
+    # Champion selalu dipilih berdasarkan validation RMSE.
+    # Berlaku untuk training manual maupun GitHub Actions.
+    champion = min(
+        results,
+        key=lambda r: r["val_metrics"]["rmse"]
+    )
+
+    # Pada mode CI, model belum boleh didaftarkan
+    # atau mengubah alias sebelum evaluation gate PASS.
     if not ci_mode:
-        champion = min(results, key=lambda r: r["val_metrics"]["rmse"])
         client = MlflowClient()
         client.set_registered_model_alias(
-            REGISTERED_MODEL_NAME, 
-            "champion", 
+            REGISTERED_MODEL_NAME,
+            "champion",
             champion["version"]
         )
+
 
     # Test hanya diakses setelah pemilihan champion.
     # Kedua model dinilai satu kali untuk laporan, bukan untuk memilih pemenang.
@@ -383,7 +393,21 @@ def train(n_trials, tracking_uri, ci_mode=False):
         f"CHAMPION (menurut validation RMSE): {champion['algorithm']} "
         f"v{champion['version']}"
     )
-    print(f"Load champion: models:/{REGISTERED_MODEL_NAME}@champion")
+    if ci_mode:
+        print(
+            f"CI candidate selected: {champion['algorithm']}"
+        )
+        print(
+            f"Candidate model URI: {champion['model_uri']}"
+        )
+        print(
+            "Waiting for evaluation gate before registration."
+        )
+    else:
+        print(
+            f"Load champion: "
+            f"models:/{REGISTERED_MODEL_NAME}@champion"
+        )
 
 
 if __name__ == "__main__":
