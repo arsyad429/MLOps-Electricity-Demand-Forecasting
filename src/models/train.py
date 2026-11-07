@@ -22,6 +22,9 @@ from mlflow.models import infer_signature
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from xgboost import XGBRegressor
 
+import json
+import os
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_PATH = PROJECT_ROOT / "data/processed/historical/ciso_train_features.csv"
@@ -70,8 +73,6 @@ def load_dataset():
     df = df.sort_values("period").dropna(subset=required).reset_index(drop=True)
 
     # feature_engineering.py memakai shift(1/2/24) dan rolling(24).
-    # Jangan memakai baris yang berada dekat gap timestamp karena lag
-    # baris tidak selalu berarti lag dengan selisih jam yang benar.
     has_24h_context = df["period"].diff(24).eq(pd.Timedelta(hours=24))
     discarded = int((~has_24h_context).sum())
     df = df.loc[has_24h_context].reset_index(drop=True)
@@ -214,7 +215,16 @@ def tune_algorithm(algorithm, X_train, y_train, X_val, y_val, data_hash, n_trial
     return study.best_params
 
 
-def fit_and_register(algorithm, params, X_train, y_train, X_val, y_val, data_hash):
+def fit_and_register(
+    algorithm,
+    params,
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    data_hash,
+    register=True,
+):
     with mlflow.start_run(run_name=f"{algorithm}_Optuna_Best") as run:
         set_lineage_tags(algorithm, data_hash)
         mlflow.log_params(params)
@@ -243,30 +253,46 @@ def fit_and_register(algorithm, params, X_train, y_train, X_val, y_val, data_has
         mlflow.log_dict({"feature_columns": FEATURE_COLUMNS}, "features.json")
 
         # MLflow 3: info.model_uri dapat berupa models:/<logged_model_id>.
-        model_version = mlflow.register_model(
-            model_uri=info.model_uri,
-            name=REGISTERED_MODEL_NAME,
-            tags={
-                "algorithm": algorithm,
-                "dataset_dvc_md5": data_hash,
-                "validation_rmse": str(val_metrics["rmse"]),
-            },
+        
+        model_version = None
+
+        if register:
+            model_version = mlflow.register_model(
+                model_uri=info.model_uri,
+                name=REGISTERED_MODEL_NAME,
+                tags={
+                    "algorithm": algorithm,
+                    "dataset_dvc_md5": data_hash,
+                    "validation_rmse": str(
+                        val_metrics["rmse"]
+                    ),
+                },
+            )
+
+        version = (
+            str(model_version.version)
+            if model_version is not None
+            else "unregistered"
         )
 
         print(
-            f"{algorithm:8} | validation RMSE={val_metrics['rmse']:.3f} | "
-            f"registry version={model_version.version} | run={run.info.run_id}"
+            f"{algorithm} | validation RMSE="
+            f"{val_metrics['rmse']:.3f} | "
+            f"registry version={version}"
         )
+
         return {
             "algorithm": algorithm,
             "model": model,
-            "version": str(model_version.version),
+            "model_uri": info.model_uri,
+            "version": version,
             "run_id": run.info.run_id,
             "val_metrics": val_metrics,
         }
 
 
-def train(n_trials, tracking_uri):
+
+def train(n_trials, tracking_uri, ci_mode=False):
     mlflow.set_tracking_uri(tracking_uri)
     mlflow.set_experiment(EXPERIMENT_NAME)
 
@@ -283,16 +309,26 @@ def train(n_trials, tracking_uri):
             algorithm, X_train, y_train, X_val, y_val, data_hash, n_trials
         )
         result = fit_and_register(
-            algorithm, params, X_train, y_train, X_val, y_val, data_hash
+            algorithm, 
+            params, 
+            X_train, 
+            y_train, 
+            X_val, 
+            y_val, 
+            data_hash, 
+            register=not ci_mode,
         )
         results.append(result)
 
     # Pilih pemenang dari validation, bukan test.
-    champion = min(results, key=lambda r: r["val_metrics"]["rmse"])
-    client = MlflowClient()
-    client.set_registered_model_alias(
-        REGISTERED_MODEL_NAME, "champion", champion["version"]
-    )
+    if not ci_mode:
+        champion = min(results, key=lambda r: r["val_metrics"]["rmse"])
+        client = MlflowClient()
+        client.set_registered_model_alias(
+            REGISTERED_MODEL_NAME, 
+            "champion", 
+            champion["version"]
+        )
 
     # Test hanya diakses setelah pemilihan champion.
     # Kedua model dinilai satu kali untuk laporan, bukan untuk memilih pemenang.
@@ -302,6 +338,37 @@ def train(n_trials, tracking_uri):
             mlflow.log_metrics({f"test_{k}": v for k, v in metrics.items()})
             mlflow.set_tag("selected_champion", str(result is champion).lower())
         result["test_metrics"] = metrics
+
+
+    if ci_mode:
+        output_dir = PROJECT_ROOT / "ci_output"
+        output_dir.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        candidate = {
+            "algorithm": champion["algorithm"],
+            "run_id": champion["run_id"],
+            "model_uri": champion["model_uri"],
+            "dataset_dvc_md5": data_hash,
+            "git_sha": os.environ.get(
+                "GITHUB_SHA",
+                "local",
+            ),
+            "val_metrics": champion["val_metrics"],
+            "test_metrics": champion["test_metrics"],
+        }
+
+        output_path = output_dir / "candidate.json"
+
+        output_path.write_text(
+            json.dumps(candidate, indent=2),
+            encoding="utf-8",
+        )
+
+        print(f"CI candidate saved: {output_path}")
+
 
     print("\n=== PERBANDINGAN AKHIR ===")
     for result in results:
@@ -321,12 +388,30 @@ def train(n_trials, tracking_uri):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Optuna + MLflow: XGBoost vs LightGBM")
-    parser.add_argument("--trials", type=int, default=10, help="Jumlah trial per algoritma")
     parser.add_argument(
-        "--tracking-uri", default="http://127.0.0.1:5000",
+        "--trials", 
+        type=int, 
+        default=50, 
+        help="Jumlah trial per algoritma"
+    )
+    parser.add_argument(
+        "--tracking-uri",
+        default=os.environ.get(
+            "MLFLOW_TRACKING_URI",
+            "http://127.0.0.1:5000",
+        ),
         help="MLflow Tracking Server URL",
+    )
+    parser.add_argument(
+        "--ci",
+        action="store_true",
+        help="Log model without registering it",
     )
     args = parser.parse_args()
     if args.trials < 1:
         parser.error("--trials harus minimal 1")
-    train(args.trials, args.tracking_uri)
+    train(
+        args.trials,
+        args.tracking_uri,
+        ci_mode=args.ci,
+    )

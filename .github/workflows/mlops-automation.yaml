@@ -1,0 +1,156 @@
+
+name: MLOps - Code as Trigger
+
+on:
+  push:
+    branches: [main]
+
+  pull_request:
+    branches: [main]
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mlops-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ==========================================
+  # JOB 1: AUTOMATED TESTING
+  # ==========================================
+  automated-testing:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Run automated tests
+        run: |
+          python -m pytest tests/ -v
+
+
+  # ==========================================
+  # JOB 2: AUTOMATED TRAINING & REGISTRY
+  # ==========================================
+  automated-training:
+    needs: automated-testing
+
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/main'
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      DAGSHUB_TOKEN: ${{ secrets.DAGSHUB_TOKEN }}
+      MLFLOW_TRACKING_URI: ${{ vars.MLFLOW_TRACKING_URI }}
+      MLFLOW_TRACKING_USERNAME: ${{ vars.DAGSHUB_USERNAME }}
+      MLFLOW_TRACKING_PASSWORD: ${{ secrets.DAGSHUB_TOKEN }}
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt "dvc[s3]"
+
+      # ======================================
+      # 1. RESTORE VERSIONED DATA
+      # ======================================
+      - name: Configure DVC credentials
+        run: |
+          test -n "$DAGSHUB_TOKEN"
+          test -n "$MLFLOW_TRACKING_URI"
+
+          dvc remote modify --local dagshub \
+            access_key_id "$DAGSHUB_TOKEN"
+
+          dvc remote modify --local dagshub \
+            secret_access_key "$DAGSHUB_TOKEN"
+
+      - name: Pull historical dataset from DagsHub
+        run: |
+          dvc pull -r dagshub \
+            data/raw/historical/ciso_historical.csv.dvc
+
+      # ======================================
+      # 2. AUTOMATED PREPROCESSING
+      # ======================================
+      - name: Preprocess training data
+        run: |
+          python -m src.pipelines.preprocess_train_data
+
+      - name: Build training features
+        run: |
+          python -m src.pipelines.build_train_features
+
+      - name: Update processed dataset DVC pointer
+        run: |
+          dvc add \
+            data/processed/historical/ciso_train_features.csv
+
+      # ======================================
+      # 3. AUTOMATED RETRAINING
+      # ======================================
+      - name: Run Optuna retraining
+        run: |
+          python -m src.models.train \
+            --trials 3 \
+            --ci \
+            --tracking-uri "$MLFLOW_TRACKING_URI"
+
+      # ======================================
+      # 4. MODEL EVALUATION
+      # ======================================
+      - name: Validate model performance
+        run: |
+          python scripts/ci_gate.py evaluate
+
+      # ======================================
+      # 5. PERSIST DATA AND REGISTER MODEL
+      # ======================================
+      - name: Push validated dataset to DagsHub
+        run: |
+          dvc push -r dagshub \
+            data/processed/historical/ciso_train_features.csv.dvc
+
+      - name: Register validated model to Staging
+        run: |
+          python scripts/ci_gate.py register
+
+      # ======================================
+      # 6. SAVE EXECUTION EVIDENCE
+      # ======================================
+      - name: Upload pipeline evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlops-evidence-${{ github.run_id }}
+          path: |
+            ci_output/
+            data/processed/historical/ciso_train_features.csv.dvc
+          if-no-files-found: warn
