@@ -1,57 +1,53 @@
 # Electricity Demand Forecasting with MLOps
 
-> **Status:** data ingestion dan preprocessing dasar sudah tersedia; training model, API, dashboard, dan monitoring masih dalam pengembangan.
+Sistem forecasting demand listrik **California ISO (CISO) untuk t+2 jam**, menggunakan data hourly EIA, XGBoost/LightGBM, Optuna, MLflow, DVC, dan GitHub Actions. Timestamp dataset menggunakan UTC; fitur kalender menggunakan zona waktu `America/Los_Angeles`.
 
-## Project Overview
+## Status implementasi
 
-Project ini membangun sistem forecasting permintaan listrik satu jam ke depan menggunakan machine learning dan praktik MLOps. Data yang digunakan adalah demand listrik **California ISO (CISO)** dengan frekuensi hourly dalam UTC.
+| Komponen | Kondisi saat ini |
+| --- | --- |
+| Ingestion | Client EIA API v2, pembaruan historis incremental, dan pengambilan record terbaru |
+| Preprocessing | Normalisasi waktu/nilai dan target `target_demand_2h` berdasarkan pencocokan timestamp |
+| Feature engineering | Kalender California, lag 1/2/24 baris, dan rolling mean 3/24 baris |
+| Training | Tuning XGBoost dan LightGBM dengan Optuna; split kronologis dan pemilihan berdasarkan validation RMSE |
+| Tracking dan registry | MLflow runs, artifacts, signature, dataset lineage, alias, dan lifecycle LK-07 |
+| Versioning data | Pointer DVC untuk dataset raw, fitur training, dan metadata LK-07 |
+| CI dan continuous training | Automated tests, retraining pada `main`, evaluation gate, dan registrasi kandidat ke Staging |
+| Backend, frontend, monitoring | Folder rencana; aplikasi serving, dashboard, dan drift detection belum tersedia |
 
-## Model Aktif untuk Inferensi
+Inferensi yang sudah tersedia adalah smoke test model registry menggunakan sampel historis. Pengumpulan satu record terbaru belum membentuk pipeline prediksi live karena fitur model memerlukan riwayat demand.
 
-Berdasarkan [metadata lifecycle LK-07](artifacts/lk07/model_lineage.json), model aktif untuk inferensi adalah **XGBoost versi 2** pada registry `CISO-Demand-Forecaster-LK07`, dengan stage **Production** dan alias **`champion`**. Model dimuat melalui URI `models:/CISO-Demand-Forecaster-LK07@champion` untuk memprediksi demand listrik **t+2 jam**. Metadata v3 di [`config/model_metadata.json`](config/model_metadata.json) berasal dari eksperimen sebelumnya (`CISO-Demand-Forecaster`); model tersebut menjadi sumber v1 LK-07.
-
-V2 merupakan hasil retraining dengan `n_estimators` diturunkan dari 600 menjadi 550 pada dataset yang sama. Dibandingkan v1, MAE validasi turun dari **720,93 menjadi 715,19** dan WAPE dari **2,736% menjadi 2,714%**, sehingga mendukung penggunaannya sebagai versi Production. Namun, RMSE validasi sedikit naik dari **1.028,97 menjadi 1.030,16**; pemilihan v2 memiliki tradeoff dan bukan peningkatan pada semua metrik. Inferensi yang tersedia saat ini berupa verifikasi menggunakan sampel historis melalui `src/models/registry.py`, sementara API serving masih dalam pengembangan.
-
-## ML Task
-
-- Tipe tugas: time-series regression
-- Target: electricity demand pada **t+1 hour**
-- Balancing Authority: **CISO**
-- Metric data: **D — Demand**
-- Frekuensi: hourly UTC
-
-## Data Source
-
-Data diambil dari [U.S. Energy Information Administration Open Data API v2](https://www.eia.gov/opendata/) melalui route `electricity/rto/region-data`. Pengumpul data meminta field `value`, respondent `CISO`, dan type `D`, kemudian mengurutkan hasil berdasarkan `period` secara ascending.
-
-## Repository Structure
+## Struktur dan dokumentasi
 
 ```text
-MLOps-Electricity Demand Forecasting/
-├── backend/                    # Future FastAPI service
-├── config/                     # Konfigurasi data, model, dan pipeline
-├── data/
-│   ├── raw/                    # Respons API dalam format CSV
-│   ├── interim/                # Data setelah preprocessing dasar
-│   ├── processed/              # Data siap digunakan model
-│   └── external/               # Data dari sumber eksternal lain
-├── frontend/                   # Future React + Vite dashboard
-├── models/                     # Model artifacts lokal
-├── notebooks/                  # EDA dan eksperimen
-├── scripts/                    # Lokasi utilitas operasional mendatang
-├── src/
-│   ├── data/                   # Client EIA dan fungsi preprocessing
-│   └── pipelines/              # Entry point pengumpulan dan preprocessing data
-└── tests/                      # Automated tests
+MLOps-Electricity-Demand-Forecasting/
+|-- .devcontainer/           # Python 3.11 dan konfigurasi Codespaces
+|-- .github/workflows/       # CI dan automated retraining
+|-- artifacts/lk07/          # Pointer DVC metadata lifecycle
+|-- backend/                # Rencana FastAPI serving
+|-- config/                 # YAML, threshold CI, snapshot metadata model
+|-- data/                   # raw, interim, processed, external
+|-- docs/                   # Placeholder dokumentasi tambahan
+|-- frontend/               # Rencana dashboard React + Vite
+|-- models/                 # Placeholder artifacts model lokal
+|-- notebooks/              # Eksplorasi akses API EIA
+|-- scripts/                # Evaluation gate dan export metadata
+|-- src/
+|   |-- data/               # Client API dan preprocessing
+|   |-- features/           # Transformasi fitur
+|   |-- models/             # Training dan lifecycle registry
+|   |-- monitoring/         # Rencana monitoring
+|   `-- pipelines/          # Entry point persiapan data
+`-- tests/                  # Pengujian metrik, split, fitur, dan model
 ```
 
-Dokumentasi lebih rinci untuk komponen pengumpulan data tersedia di [`src/data/README.md`](src/data/README.md) dan [`src/pipelines/README.md`](src/pipelines/README.md).
+Dokumentasi komponen: [data](src/data/README.md), [pipelines](src/pipelines/README.md), [features](src/features/README.md), [models](src/models/README.md), [scripts](scripts/README.md), [tests](tests/README.md), [notebooks](notebooks/README.md), [backend](backend/README.md), [frontend](frontend/README.md), dan [monitoring](src/monitoring/README.md).
 
-## Persiapan Environment
+## Persiapan environment
 
-Jalankan seluruh perintah dari root repository. Project memerlukan Python 3.11 atau yang kompatibel.
+Gunakan Python **3.11+**, dengan Python 3.11 sebagai versi CI dan devcontainer. Jalankan perintah dari root repository.
 
-### PowerShell (Windows)
+PowerShell:
 
 ```powershell
 python -m venv .venv
@@ -60,7 +56,7 @@ python -m pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-### Bash (Linux, macOS, atau Codespaces)
+Bash:
 
 ```bash
 python -m venv .venv
@@ -69,208 +65,141 @@ python -m pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Isi API key EIA di `.env`:
+Isi `EIA_API_KEY` di `.env` untuk ingestion. `DATABASE_URL` masih berupa placeholder dan belum dipakai oleh aplikasi backend. Untuk remote DVC DagsHub, pasang tambahan `python -m pip install "dvc[s3]"`.
 
-```dotenv
-EIA_API_KEY=your_eia_api_key_here
-```
+Dependency belum dikunci versinya. Training memakai API MLflow seperti `log_model(name=...)`; gunakan environment MLflow yang mendukung API tersebut. Codespaces memasang dependency Python otomatis dan meneruskan port 5000, 8000, serta 5173; service terkait tetap perlu dijalankan sendiri.
 
-API key dapat diperoleh dari halaman [EIA Open Data](https://www.eia.gov/opendata/register.php). File `.env` diabaikan oleh Git; jangan commit credential ke repository.
+## Memulihkan dataset dengan DVC
 
-## Menjalankan Pengumpul Data
+Git menyimpan pointer `.dvc`, sedangkan isi dataset/artifact berada di cache atau remote DVC. Repository sudah diinisialisasi dengan dua remote:
 
-Subfolder output dibuat otomatis oleh fungsi penyimpanan. Jika ingin menyiapkannya sebelum eksekusi pertama, jalankan perintah berikut. CSV hasil unduhan diabaikan oleh Git; metadata `.dvc` dapat di-commit.
+| Remote | Lokasi | Penggunaan |
+| --- | --- | --- |
+| `localstorage` (default) | `E:/DVC-Storage/MLOps-Electricity-Demand-Forecasting` | Storage lokal Windows; memerlukan drive/path tersebut |
+| `dagshub` | `s3://dvc`, endpoint DagsHub repository ini | Pemulihan dan penyimpanan dataset oleh workflow CI |
 
-PowerShell:
+Periksa konfigurasi dengan `dvc remote list`. Pada mesin lain atau Linux, pilih `-r dagshub` secara eksplisit. Setelah menyiapkan credential lokal dari token DagsHub:
 
 ```powershell
-New-Item -ItemType Directory -Force data/raw/historical, data/raw/inference
+dvc remote modify --local dagshub access_key_id $env:DAGSHUB_TOKEN
+dvc remote modify --local dagshub secret_access_key $env:DAGSHUB_TOKEN
+dvc pull -r dagshub data/raw/historical/ciso_historical.csv.dvc
 ```
 
-Bash:
+Pada Bash, gunakan `"$DAGSHUB_TOKEN"` untuk nilai credential. Opsi `--local` menyimpan credential di `.dvc/config.local`, yang diabaikan Git. Pengunduhan memerlukan akses dan object yang telah diunggah ke remote; keberadaan pointer tidak menjamin object tersedia di setiap remote.
+
+Untuk memakai fitur training yang sudah dilacak, jalankan:
 
 ```bash
-mkdir -p data/raw/historical data/raw/inference
+dvc pull -r dagshub data/processed/historical/ciso_train_features.csv.dvc
 ```
 
-### 1. Mengumpulkan data historis untuk training
+## Alur data dan training lokal
 
-```powershell
+### 1. Pembaruan data historis (opsional)
+
+```bash
 python -m src.pipelines.save_train_historical_data
 ```
 
-Secara default, pipeline mengambil data per tahun mulai 2019 sampai tahun UTC saat ini. Setiap tahun dibagi menjadi dua request agar jumlah record per request tetap berada dalam batas API. File disimpan sebagai:
+Pipeline memerlukan `data/raw/historical/ciso_historical.csv` yang sudah ada. Data baru diambil mulai satu jam setelah timestamp terakhir hingga jam UTC sekarang dikurangi satu jam, dalam chunk maksimal 24 jam. Request tertentu diulang maksimal tiga percobaan. Hasil digabung, dideduplikasi berdasarkan `period`, dan menimpa file yang sama. Entry point ini tidak menyediakan argumen rentang tahun atau bootstrap dataset kosong.
 
-```text
-data/raw/historical/ciso_historical.csv
+### 2. Preprocessing dan feature engineering
+
+```bash
+python -m src.pipelines.preprocess_train_data
+python -m src.pipelines.build_train_features
+dvc add data/processed/historical/ciso_train_features.csv
 ```
 
-Untuk memilih rentang tahun tertentu, panggil fungsinya secara langsung. Kedua batas tahun bersifat inklusif:
+Output berturut-turut adalah `data/interim/historical/processed_ciso_historical.csv` dan `data/processed/historical/ciso_train_features.csv`. Target berasal dari demand pada timestamp **tepat dua jam setelah `period`**. Baris tanpa target atau fitur lengkap dibuang oleh pipeline fitur.
 
-```powershell
-python -c "from src.pipelines.save_train_historical_data import save_ciso_train_df; save_ciso_train_df(2022, 2024)"
+Training membaca hash dari pointer `.dvc` sebagai lineage. Setelah mengubah CSV, perbarui pointer sebelum training agar hash yang dicatat sesuai dataset. Jika raw juga berubah, jalankan `dvc add data/raw/historical/ciso_historical.csv`. Unggah data ke remote yang dipakai tim, kemudian commit pointer dan perubahan terkait ke Git; CSV lengkap dan cache tidak perlu dimasukkan ke Git.
+
+### 3. Jalankan MLflow
+
+Pada terminal terpisah dengan environment aktif:
+
+```bash
+mlflow server --backend-store-uri sqlite:///mlflow.db --artifacts-destination ./mlartifacts --host 127.0.0.1 --port 5000
 ```
 
-### 2. Mengumpulkan data terbaru untuk inference
+Database dan artifacts lokal diabaikan Git. Server baru tidak otomatis memiliki runs atau versi registry dari mesin lain.
 
-```powershell
+### 4. Training dan perbandingan model
+
+```bash
+python -m src.models.train --trials 10 --tracking-uri http://127.0.0.1:5000
+```
+
+`--trials` berlaku **per algoritma**; default CLI adalah 50. Training memvalidasi dataset, membagi data sekitar 70/15/15 secara kronologis, dan membuang label yang melewati batas split untuk horizon dua jam. Optuna meminimalkan validation RMSE; kandidat terbaik dari dua algoritma dipilih berdasarkan metrik yang sama. Test set dievaluasi setelah pemilihan kandidat untuk pelaporan MAE, RMSE, dan WAPE (%).
+
+Mode manual mendaftarkan kedua model ke `CISO-Demand-Forecaster` lalu mengatur alias `champion`. Mode `--ci` menyimpan artifacts model dan `ci_output/candidate.json` tanpa registrasi atau perubahan alias saat training. Detail fitur, validasi, dan registry tersedia di [README models](src/models/README.md).
+
+## Data inference dan model lifecycle
+
+```bash
 python -m src.pipelines.save_inference_data
+python -c "from src.pipelines.preprocess_inference_data import preprocess_inference_data; print(preprocess_inference_data('data/raw/inference/ciso_inference.csv'))"
 ```
 
-Pipeline inference meminta data dari tiga jam sebelum command dijalankan sampai jam UTC saat ini, lalu memilih satu record terbaru berdasarkan `period` dan menyimpannya sebagai:
+Ingestion meminta jendela tiga jam terakhir hingga jam UTC sekarang dan memilih satu record terbaru. Respons kosong akibat keterlambatan publikasi EIA belum ditangani secara khusus. Preprocessing inference menghasilkan `data/interim/inference/processed_ciso_inference.csv` tanpa target. Belum ada entry point untuk menyusun fitur inference dari riwayat lalu menjalankan prediksi live.
 
-```text
-data/raw/inference/ciso_inference.csv
-```
+Tiga registry mempunyai fungsi berbeda:
 
-Karena publikasi data EIA dapat tertunda, respons pada jam terbaru mungkin kosong. Coba jalankan kembali setelah data tersedia.
+| Registry | Pengelola | Alias/hasil |
+| --- | --- | --- |
+| `CISO-Demand-Forecaster` | Training manual | `champion`, pemenang validation RMSE |
+| `CISO-Demand-Forecaster-LK07` | CLI lifecycle LK-07 | Promosi manual None -> Staging -> Production; alias `staging`/`champion` |
+| `CISO-Demand-Forecaster-CI` | Evaluation gate CI | Kandidat lolos evaluasi masuk Staging dengan alias `staging` |
 
-### Verifikasi hasil
+Snapshot [`config/model_metadata.json`](config/model_metadata.json) mencatat XGBoost v3 dari registry manual. Metadata LK-07 dilacak oleh [`artifacts/lk07/model_lineage.json.dvc`](artifacts/lk07/model_lineage.json.dvc); snapshot lokal yang diperiksa mencatat v2 sebagai Production dan `champion`, dengan `n_estimators` 600 -> 550. MAE/WAPE validasi membaik (720,93 -> 715,19; 2,736% -> 2,714%), sementara RMSE sedikit naik (1.028,97 -> 1.030,16). Snapshot tersebut merupakan bukti eksperimen, bukan pemeriksaan status registry live.
 
-PowerShell:
-
-```powershell
-Get-ChildItem data/raw/historical, data/raw/inference -Filter *.csv
-```
-
-Bash:
+Pada MLflow server yang memiliki registry LK-07 dan dataset terkait:
 
 ```bash
-find data/raw/historical data/raw/inference -name '*.csv'
+python -m src.models.registry --tracking-uri http://127.0.0.1:5000 status
+python -m src.models.registry --tracking-uri http://127.0.0.1:5000 verify
 ```
 
-Nama file tetap, sehingga eksekusi berikutnya menimpa CSV sebelumnya. Simpan versi yang ingin dipertahankan dengan DVC dan Git sebelum menjalankan pengumpulan ulang. Respons HTTP yang gagal, API key yang tidak valid, atau koneksi yang timeout akan menghentikan command dan menampilkan exception.
+`verify` membandingkan prediksi dari alias `champion` dan stage Production menggunakan baris terakhir dataset historis. Langkah registrasi dan promosi dijelaskan di [README models](src/models/README.md).
 
-## Menambahkan Versi Data dengan DVC
+## GitHub Actions: CI dan continuous training
 
-Dataset historis dilacak melalui `data/raw/historical/ciso_historical.csv.dvc`. File ini mencatat hash, ukuran, dan lokasi CSV. Isi dataset disimpan dalam cache lokal `.dvc/cache/`, sedangkan Git menyimpan metadata `.dvc` dan riwayat commit. Jangan mengedit file cache secara manual.
+Workflow [`ci.yml`](.github/workflows/ci.yml) berjalan pada push dan pull request untuk memasang dependency serta memverifikasi environment Python 3.11.
 
-### 1. Persiapan DVC
+Workflow [`mlops-automation.yaml`](.github/workflows/mlops-automation.yaml) berjalan pada push/PR ke `main` dan `workflow_dispatch`:
 
-Aktifkan `.venv` seperti pada bagian persiapan environment. DVC sudah tercantum dalam `requirements.txt`, sehingga ikut terpasang saat menginstal dependency proyek. Jika environment sudah ada sebelum dependency ini ditambahkan, jalankan ulang instalasi:
+1. Menjalankan `python -m pytest tests/ -v`.
+2. Setelah tests lolos, training berjalan untuk event selain PR pada ref `main`.
+3. Mengambil dataset raw dari remote DagsHub, menjalankan preprocessing dan feature engineering, lalu memperbarui pointer fitur dengan `dvc add`.
+4. Menjalankan Optuna sebanyak tiga trial per algoritma dalam mode `--ci`.
+5. Menguji kandidat dengan threshold [`config/ci_thresholds.yaml`](config/ci_thresholds.yaml): **validation RMSE <= 1200** dan **validation WAPE <= 3,0%**. Nilai harus finite; metrik test bukan dasar pemilihan atau gate.
+6. Jika gate lolos, mengunggah dataset fitur ke DagsHub lalu mendaftarkan kandidat ke registry CI pada Staging.
+7. Mengunggah evidence `ci_output/` dan pointer fitur sebagai artifact `mlops-evidence-<run_id>`, termasuk pada kegagalan jika file tersedia.
+
+Repository settings perlu menyediakan:
+
+| Jenis | Nama | Kegunaan |
+| --- | --- | --- |
+| Actions secret | `DAGSHUB_TOKEN` | Credential DVC dan password MLflow |
+| Actions variable | `MLFLOW_TRACKING_URI` | Endpoint tracking MLflow |
+| Actions variable | `DAGSHUB_USERNAME` | Username MLflow |
+
+Job training memakai repository secrets/variables tanpa deklarasi GitHub Environment. Workflow ini memakai data raw versi DVC, tidak mengambil data EIA baru, tidak melakukan promosi Production otomatis, dan tidak melakukan commit pointer hasil training ke repository. Push dokumentasi ke `main` juga memicu workflow karena belum ada filter path.
+
+## Pengujian
 
 ```bash
-python -m pip install -r requirements.txt
-dvc --version
+python -m pytest tests/ -v
 ```
 
-Repository ini sudah diinisialisasi dengan DVC. Hanya untuk repository baru yang belum memiliki `.dvc/`, jalankan sekali:
+Suite saat ini mencakup lima kasus: metrik, batas chronological split, nilai fitur, dan fit/predict untuk dua algoritma. Tests memakai data sintetis dan tidak memerlukan EIA, dataset DVC, atau server MLflow aktif. Cakupan belum mencakup integrasi remote dan seluruh alur CI; lihat [README tests](tests/README.md).
 
-```bash
-dvc init
-git add .dvc .dvcignore
-git commit -m "Initialize DVC"
-```
+## Konfigurasi dan batas implementasi
 
-### 2. Mengumpulkan dan mencatat versi baru
+`config/ci_thresholds.yaml` dibaca langsung oleh evaluation gate. Sebaliknya, `config/data.yaml`, `config/model.yaml`, dan `config/pipeline.yaml` masih bersifat deklaratif dan belum menjadi sumber parameter runtime pipeline/training. `config/data.yaml` masih mencatat horizon satu jam dan daftar lag di `config/model.yaml` berbeda dari implementasi. Untuk perilaku aktual, gunakan `target_demand_2h`, fungsi `add_features`, dan `FEATURE_COLUMNS` di kode training.
 
-Jalankan dari root repository setelah mengisi API key EIA:
+Lag dan rolling dihitung berdasarkan posisi baris; data harus terurut dengan interval hourly. Training menyaring baris dengan konteks 24 jam yang tidak lengkap, tetapi belum ada validasi menyeluruh atau perbaikan gap pada ingestion. API serving, penyusunan fitur inference live, dashboard, drift detection, dan retraining berbasis jadwal/drift masih menjadi pekerjaan berikutnya.
 
-```bash
-python -m src.pipelines.save_train_historical_data
-dvc add data/raw/historical/ciso_historical.csv
-dvc status
-git diff -- data/raw/historical/ciso_historical.csv.dvc
-git status --short
-```
-
-`dvc add` menyimpan isi terbaru ke cache dan memperbarui metadata. Jika isi CSV sama, hash tetap sama dan tidak ada perubahan metadata untuk di-commit. `dvc status` memeriksa kesesuaian data lokal dengan metadata; perubahan versi yang akan dicatat di Git terlihat melalui `git diff`.
-
-Commit metadata untuk menyimpan versi tersebut:
-
-```bash
-git add .gitignore data/raw/historical/ciso_historical.csv.dvc
-git commit -m "Update CISO historical dataset"
-```
-
-Jika DVC membuat atau mengubah `.gitignore` di subfolder data, stage file tersebut juga. Sertakan perubahan kode atau konfigurasi pengumpulan yang relevan dalam commit agar asal versi data dapat ditelusuri. Gunakan pesan commit yang menjelaskan rentang data atau alasan pembaruan.
-
-Ulangi alur **pengumpulan → `dvc add` → pemeriksaan → commit Git** setiap kali ingin menambahkan versi. Nama CSV tetap sama; commit Git membedakan versinya. Untuk melacak dataset lain, gunakan alur yang sama dengan path CSV dan `.dvc` yang sesuai.
-
-### 3. Membagikan data melalui remote
-
-Saat ini `.dvc/config` belum berisi remote storage. Riwayat Git saja tidak menyimpan isi CSV, sehingga pemulihan versi memerlukan cache lokal atau remote DVC yang sudah berisi versi tersebut.
-
-Setelah remote DVC dikonfigurasi, unggah isi data sebelum membagikan commit:
-
-```bash
-dvc push
-git push
-```
-
-`dvc push` mengunggah data ke remote DVC; `git push` mengunggah kode dan metadata ke remote Git. Pada clone lain dengan remote dan akses yang sesuai, jalankan `dvc pull` untuk mengunduh data. Jika menggunakan Amazon S3, install dukungannya dengan `python -m pip install "dvc[s3]"` dan simpan credential di luar Git.
-
-### 4. Memulihkan versi sebelumnya
-
-Pastikan perubahan lokal yang ingin dipertahankan sudah disimpan, lalu lihat riwayat dataset:
-
-```bash
-git log --oneline -- data/raw/historical/ciso_historical.csv.dvc
-```
-
-Untuk memeriksa seluruh proyek pada commit tertentu, ganti `COMMIT_ID` dengan hash dari riwayat tersebut:
-
-```bash
-git switch --detach COMMIT_ID
-dvc checkout data/raw/historical/ciso_historical.csv.dvc
-```
-
-`dvc checkout` memulihkan CSV dari cache lokal sesuai metadata pada commit yang dipilih. Jika cache versi itu tidak tersedia, gunakan `dvc pull data/raw/historical/ciso_historical.csv.dvc` setelah remote dikonfigurasi dan data versinya telah diunggah. CSV lokal akan diganti dengan versi yang dipilih.
-
-Untuk kembali ke branch sebelumnya dan menyelaraskan CSV:
-
-```bash
-git switch -
-dvc checkout data/raw/historical/ciso_historical.csv.dvc
-```
-
-### Jika metadata DVC diabaikan oleh Git
-
-Jika `dvc add` menampilkan `bad DVC file name ... is git-ignored`, periksa aturan yang cocok:
-
-```bash
-git check-ignore -v data/raw/historical/ciso_historical.csv.dvc
-```
-
-Aturan `.gitignore` proyek mengabaikan isi `data/raw/`, tetapi mengizinkan penelusuran subfolder serta file `.dvc` dan `.gitignore`. Pertahankan pengecualian ini agar metadata bisa di-commit tanpa memasukkan CSV atau cache ke Git.
-
-Referensi: [DVC add](https://doc.dvc.org/command-reference/add), [memperbarui data yang dilacak](https://doc.dvc.org/user-guide/how-to/update-tracked-data), dan [alur versioning dan pemulihan data](https://doc.dvc.org/start?tab=Mac-Linux).
-
-## Preprocessing Dasar
-
-Modul preprocessing mengubah `period` menjadi datetime UTC, mengubah `value` menjadi numerik, membuang duplikat dan nilai kosong, lalu mengurutkan data berdasarkan waktu. Untuk data training, modul juga membentuk kolom target `target_demand_1h` menggunakan demand pada baris satu jam berikutnya.
-
-Fungsi preprocessing saat ini dipanggil dari Python dan belum mempunyai CLI tersendiri. Contoh penggunaan tersedia di [`src/pipelines/README.md`](src/pipelines/README.md).
-
-## GitHub Codespaces
-
-Repository menyediakan development container dengan Python 3.11. Setelah Codespace selesai dibuat, salin `.env.example` menjadi `.env`, isi `EIA_API_KEY` melalui secret Codespaces atau file lokal yang tidak di-commit, lalu jalankan modul pipeline dengan command yang sama seperti di atas.
-
-## Security / Secret Management
-
-Simpan secret hanya di `.env` lokal, GitHub Codespaces secrets, atau secret manager pada environment deployment. Jangan menaruh API key di `config/`, source code, notebook, CI configuration, atau dokumentasi.
-
-## Development Roadmap
-
-1. Initial project scaffold — selesai.
-2. Exploratory data analysis — tersedia di folder `notebooks/`.
-3. Data ingestion dan preprocessing dasar — sudah diimplementasikan.
-4. Data validation dan feature engineering.
-5. Model training, prediction, dan evaluation.
-6. Backend API, frontend dashboard, monitoring, dan automated retraining.
-
-## Project Architecture
-
-```mermaid
-flowchart LR
-    EIA[EIA API] --> INGEST[Data Ingestion]
-    INGEST --> VALIDATE[Data Validation]
-    VALIDATE --> FEATURES[Feature Engineering]
-    FEATURES --> MODEL[Forecasting Model]
-    MODEL --> API[Backend API]
-    API --> DASHBOARD[Frontend Dashboard]
-    DASHBOARD --> MONITOR[Monitoring & Drift Detection]
-    MONITOR -. Future feedback loop .-> VALIDATE
-```
-
-Saat ini bagian yang telah tersedia adalah pengambilan data dari EIA dan preprocessing dasar. Komponen sesudahnya pada diagram masih merupakan target pengembangan.
+Simpan credential di `.env`, environment variables, Actions secrets, atau konfigurasi DVC lokal. Jangan commit token, database MLflow, cache, atau artifacts model lokal.

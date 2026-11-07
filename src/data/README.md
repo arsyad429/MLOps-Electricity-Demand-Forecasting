@@ -1,21 +1,15 @@
-# Data Modules
+# Data modules
 
-Folder ini berisi fungsi reusable untuk mengambil dan membersihkan data demand CISO.
+Modul reusable untuk mengambil demand listrik CISO dari EIA dan menyiapkan data hourly untuk prediksi **t+2 jam**. Jalankan contoh dari root repository setelah memasang [dependency proyek](../../README.md#persiapan-environment).
 
-## Isi Modul
+## `ingest_data.py`
 
-### `ingest_data.py`
+`get_ciso_EIA_data(start_date=None, end_date=None, train=True)` membaca `EIA_API_KEY` melalui environment/`.env` dan mengembalikan JSON respons API. Request menggunakan route `electricity/rto/region-data/data/`, frekuensi hourly, respondent `CISO`, type `D`, field `value`, urutan `period` ascending, dan batas 5.000 record tanpa pagination. Timeout setiap request adalah 120 detik; error HTTP diteruskan sebagai exception.
 
-- `get_ciso_EIA_data(start_date=None, end_date=None, train=True)` mengambil data hourly demand dari EIA API v2.
-- `save_raw_data(df, prefix)` menyimpan DataFrame sebagai CSV bertimestamp UTC di bawah `data/raw/`.
-
-Dalam mode training, `start_date` dan `end_date` wajib memakai format yang diterima EIA, misalnya `2024-01-01T00`. Dalam mode inference (`train=False`), request dimulai dari jam UTC saat fungsi dipanggil.
-
-Contoh mengambil satu rentang data tanpa menyimpannya:
+Dalam mode training, kedua batas waktu wajib diberikan:
 
 ```python
 import pandas as pd
-
 from src.data.ingest_data import get_ciso_EIA_data
 
 result = get_ciso_EIA_data(
@@ -25,27 +19,40 @@ result = get_ciso_EIA_data(
 df = pd.DataFrame(result["response"]["data"])
 ```
 
-Fungsi membaca `EIA_API_KEY` dari environment atau file `.env` di root project. Request menggunakan timeout 30 detik dan meneruskan kegagalan HTTP sebagai exception.
+Pilih rentang yang sesuai dengan batas record; fungsi ini tidak otomatis memecah request panjang. Pemecahan chunk dan retry tersedia pada pipeline historis.
 
-### `preprocess.py`
+Dalam mode `train=False`, batas waktu dihitung ulang menjadi tiga jam sebelum waktu UTC sekarang hingga jam UTC sekarang. Pipeline inference kemudian memilih satu record terbaru. Respons kosong belum memiliki penanganan khusus pada pipeline tersebut.
 
-`formating_ciso_data(df, train=True)` melakukan preprocessing berikut:
+`save_raw_data(df, prefix)` membuat direktori induk dan menyimpan CSV ke `data/raw/<prefix>.csv`, tanpa index. Nama file tetap dan akan ditimpa; contoh prefix `historical/ciso_historical` atau `inference/ciso_inference`.
 
-1. mengubah `period` menjadi datetime UTC;
-2. mengubah `value` menjadi numerik;
-3. membuang duplikat dan nilai kosong;
-4. mengurutkan baris berdasarkan `period`; dan
-5. menambahkan `target_demand_1h` untuk data training.
+## `preprocess.py`
 
-Nama fungsi `formating_ciso_data` mengikuti implementasi saat ini.
+Nama fungsi publik mengikuti implementasi: `formating_ciso_data(df, train=True)`.
 
-## Menjalankan Pipeline
+1. Mengubah `period` menjadi datetime dengan timezone UTC.
+2. Mengubah `value` menjadi numerik; nilai yang tidak bisa dikonversi menjadi NaN.
+3. Membuang baris duplikat penuh dan baris dengan nilai kosong, kemudian mengurutkan `period` dan mereset index.
+4. Pada mode training, memanggil `add_target_2h(df)` untuk menambahkan `target_demand_2h`.
 
-Modul di folder ini merupakan library dan bukan entry point CLI. Untuk mengunduh serta menyimpan data, jalankan pipeline dari root repository:
+`add_target_2h` menggabungkan demand berdasarkan timestamp tepat `period + 2 jam`. Target tidak dibentuk dengan menggeser dua baris, sehingga gap waktu tidak dianggap sebagai dua jam. Baris tanpa pasangan timestamp tetap memiliki target NaN dan dibuang saat membangun fitur training.
 
-```powershell
-python -m src.pipelines.save_train_historical_data
-python -m src.pipelines.save_inference_data
+```python
+from src.data.preprocess import formating_ciso_data
+
+train_df = formating_ciso_data(df.copy(), train=True)
+inference_df = formating_ciso_data(df.copy(), train=False)
 ```
 
-Lihat [`../pipelines/README.md`](../pipelines/README.md) untuk detail command, output, dan contoh preprocessing.
+Mode inference tidak menambahkan target. Fungsi memodifikasi kolom input sebelum beberapa transformasi berikutnya; gunakan `.copy()` jika DataFrame asli ingin dipertahankan. Preprocessing belum melakukan resampling, imputasi, atau deduplikasi khusus berdasarkan timestamp yang nilainya berbeda.
+
+## Entry point
+
+Modul data bukan CLI. Gunakan [pipeline](../pipelines/README.md) berikut:
+
+```bash
+python -m src.pipelines.save_train_historical_data
+python -m src.pipelines.preprocess_train_data
+python -m src.pipelines.build_train_features
+```
+
+Pipeline historis memerlukan CSV awal yang sudah ada; pulihkan melalui DVC terlebih dahulu. Detail versioning dan remote tersedia di [README utama](../../README.md#memulihkan-dataset-dengan-dvc).

@@ -1,78 +1,93 @@
-# Data Pipelines
+# Data pipelines
 
-Folder ini berisi entry point pengumpulan data dan fungsi preprocessing untuk data training serta inference. Semua command harus dijalankan dari root repository agar import `src` dan lokasi output konsisten.
+Entry point pengumpulan data, preprocessing, dan pembentukan fitur demand CISO untuk forecasting **t+2 jam**. Jalankan semua perintah dari root repository; modul preprocessing menggunakan `Path.cwd()` sebagai dasar lokasi output.
 
 ## Prasyarat
 
-1. Install dependency dengan `python -m pip install -r requirements.txt`.
-2. Salin `.env.example` menjadi `.env` dan isi `EIA_API_KEY`.
-3. Buat folder output berikut:
+Pasang dependency proyek dan isi `EIA_API_KEY` di environment/`.env` jika akan mengakses EIA. Pipeline historis memerlukan dataset awal `data/raw/historical/ciso_historical.csv`; pulihkan versi DVC dengan akses remote yang sesuai:
 
-```powershell
-New-Item -ItemType Directory -Force data/raw/historical, data/raw/inference
+```bash
+python -m pip install -r requirements.txt "dvc[s3]"
+dvc pull -r dagshub data/raw/historical/ciso_historical.csv.dvc
 ```
 
-Pada Bash, gunakan `mkdir -p data/raw/historical data/raw/inference`.
+Credential dan konfigurasi remote dijelaskan di [README utama](../../README.md#memulihkan-dataset-dengan-dvc). Direktori output dibuat otomatis oleh modul terkait.
 
-## Pengumpulan Data Historis
+## Pembaruan historis incremental
 
-```powershell
+```bash
 python -m src.pipelines.save_train_historical_data
 ```
 
-`save_train_historical_data.py` mengambil data CISO per tahun, mulai 2019 sampai tahun UTC saat ini secara default, menggabungkan seluruh respons, lalu menyimpan satu file:
+`save_ciso_train_df()` membaca CSV yang sudah ada, mencari timestamp terakhir, lalu mengambil data mulai `last_timestamp + 1 jam` sampai jam UTC sekarang dikurangi satu jam. `fetch_incremental_data(start_timestamp, end_timestamp, max_retries=3)` membagi rentang menjadi chunk maksimal 24 jam.
+
+Error HTTP 500/502/503/504 dan error request lain dicoba ulang, maksimal tiga percobaan per chunk dengan jeda 5 lalu 10 detik. Error HTTP lain diteruskan langsung. Setelah seluruh chunk selesai, baris baru digabung dengan data lama, dideduplikasi berdasarkan `period` dengan `keep="last"`, diurutkan, dan disimpan ke:
 
 ```text
-data/raw/historical/ciso_historical_<timestamp-UTC>.csv
+data/raw/historical/ciso_historical.csv
 ```
 
-Untuk membatasi rentang tahun (inklusif):
+Jika dataset sudah mutakhir atau respons baru kosong, pipeline selesai tanpa menulis ulang dataset. Tidak ada argumen rentang tahun pada `save_ciso_train_df()` dan tidak ada bootstrap otomatis bila CSV belum tersedia. Pipeline juga tidak memeriksa ulang gap atau revisi data sebelum timestamp terakhir.
 
-```powershell
-python -c "from src.pipelines.save_train_historical_data import save_ciso_train_df; save_ciso_train_df(2022, 2024)"
+## Preprocessing training
+
+```bash
+python -m src.pipelines.preprocess_train_data
 ```
 
-## Pengumpulan Data Inference
+CLI membaca file historis tetap dan menulis:
 
-```powershell
+```text
+data/interim/historical/processed_ciso_historical.csv
+```
+
+Untuk input lain, panggil fungsi Python:
+
+```bash
+python -c "from src.pipelines.preprocess_train_data import preprocess_train_data; print(preprocess_train_data('data/raw/historical/ciso_historical.csv'))"
+```
+
+Output memakai nama `processed_<nama-file-input>.csv`. Transformasi membersihkan waktu/nilai dan membuat `target_demand_2h` dengan mencocokkan timestamp tepat dua jam ke depan. Baris tanpa target masih ada pada output interim.
+
+## Pembentukan fitur training
+
+```bash
+python -m src.pipelines.build_train_features
+dvc add data/processed/historical/ciso_train_features.csv
+```
+
+`build_train_features()` membaca file interim dengan nama tetap, mengonversi `period` ke datetime UTC, menambahkan [fitur kalender/lag/rolling](../features/README.md), membuang seluruh baris dengan NaN, dan menulis:
+
+```text
+data/processed/historical/ciso_train_features.csv
+```
+
+Perbarui pointer DVC sesudah dataset berubah agar lineage training cocok dengan CSV aktual. Untuk menyimpan perubahan raw, jalankan juga `dvc add data/raw/historical/ciso_historical.csv`. Unggah object ke remote yang dituju dan commit pointer terkait ke Git. Pipeline ini bukan stage `dvc repro`; repository belum memiliki `dvc.yaml`.
+
+## Data inference
+
+```bash
 python -m src.pipelines.save_inference_data
 ```
 
-`save_inference_data.py` meminta data mulai jam UTC saat ini dan menyimpan hasil ke:
+Pipeline meminta data dari tiga jam sebelum waktu UTC saat ini hingga jam UTC saat ini, mengurutkan hasil, lalu menyimpan satu record terbaru ke `data/raw/inference/ciso_inference.csv`. Nama file tetap dan akan ditimpa. Keterlambatan publikasi dapat menghasilkan respons kosong; kasus ini belum ditangani khusus.
 
-```text
-data/raw/inference/ciso_inference_<timestamp-UTC>.csv
+Preprocessing inference dipanggil sebagai fungsi, karena modulnya belum mempunyai blok CLI:
+
+```bash
+python -c "from src.pipelines.preprocess_inference_data import preprocess_inference_data; print(preprocess_inference_data('data/raw/inference/ciso_inference.csv'))"
 ```
 
-Data EIA dapat memiliki jeda publikasi, sehingga respons untuk jam terbaru mungkin belum berisi record.
+Output adalah `data/interim/inference/processed_ciso_inference.csv` tanpa target. Belum ada pipeline pembentukan fitur inference dan prediksi live; satu record terbaru belum menyediakan riwayat untuk lag 24 jam.
 
-## Preprocessing
+## Ringkasan entry point
 
-File preprocessing menyediakan fungsi Python dan belum mempunyai CLI. Gunakan file raw yang dihasilkan pipeline sebagai input.
+| Modul | Input utama | Output | CLI `python -m` |
+| --- | --- | --- | --- |
+| `save_train_historical_data` | CSV historis awal dan EIA | CSV raw historis diperbarui | Ya |
+| `save_inference_data` | EIA, jendela tiga jam | Satu record raw terbaru | Ya |
+| `preprocess_train_data` | CSV raw historis | CSV interim dengan target t+2 | Ya |
+| `preprocess_inference_data` | CSV raw inference | CSV interim tanpa target | Tidak; panggil fungsi |
+| `build_train_features` | CSV interim historis tetap | CSV fitur training | Ya |
 
-Training:
-
-```powershell
-python -c "from src.pipelines.preprocess_train_data import preprocess_train_data; print(preprocess_train_data(r'data/raw/historical/NAMA_FILE.csv'))"
-```
-
-Hasil disimpan di `data/interim/historical/processed_NAMA_FILE.csv` dan memiliki kolom `target_demand_1h`.
-
-Inference:
-
-```powershell
-python -c "from src.pipelines.preprocess_inference_data import preprocess_inference_data; print(preprocess_inference_data(r'data/raw/inference/NAMA_FILE.csv'))"
-```
-
-Hasil disimpan di `data/interim/inference/processed_NAMA_FILE.csv` tanpa kolom target.
-
-## Ringkasan File
-
-| File | Kegunaan | Dapat dijalankan dengan `python -m` |
-| --- | --- | --- |
-| `save_train_historical_data.py` | Unduh dan simpan data historis | Ya |
-| `save_inference_data.py` | Unduh dan simpan data terbaru | Ya |
-| `preprocess_train_data.py` | Bersihkan data dan buat target t+1 | Belum; panggil fungsinya |
-| `preprocess_inference_data.py` | Bersihkan data inference | Belum; panggil fungsinya |
-
-Detail fungsi koneksi EIA dan transformasi data tersedia di [`../data/README.md`](../data/README.md).
+Workflow GitHub Actions menjalankan preprocessing dan build fitur setelah menarik raw dari DVC; workflow tidak memanggil ingestion EIA. Lihat [README utama](../../README.md#github-actions-ci-dan-continuous-training) dan [training model](../models/README.md).
