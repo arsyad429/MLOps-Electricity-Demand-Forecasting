@@ -130,7 +130,7 @@ def suggest_params(trial, algorithm):
     params = {
         "n_estimators": trial.suggest_int("n_estimators", 150, 600, step=50),
         "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
-        "max_depth": trial.suggest_int("max_depth", 3, 8),
+        "max_depth": trial.suggest_int("max_depth", 3, 10),
         "subsample": trial.suggest_float("subsample", 0.7, 1.0),
         "colsample_bytree": trial.suggest_float("colsample_bytree", 0.7, 1.0),
     }
