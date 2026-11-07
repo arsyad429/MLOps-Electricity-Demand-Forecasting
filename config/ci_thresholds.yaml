@@ -1,0 +1,3 @@
+evaluation:
+  max_val_rmse: 1200
+  max_val_wape: 3.0
