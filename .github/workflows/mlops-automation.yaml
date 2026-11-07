@@ -55,6 +55,7 @@ jobs:
       github.ref == 'refs/heads/main'
 
     runs-on: ubuntu-latest
+    environment: MLOPS_Electricity_demand
     timeout-minutes: 120
 
     env:
