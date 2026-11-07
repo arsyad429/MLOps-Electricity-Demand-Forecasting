@@ -2,3 +2,6 @@
     remote = localstorage
 ['remote "localstorage"']
     url = E:/DVC-Storage/MLOps-Electricity-Demand-Forecasting
+['remote "dagshub"']
+    url = s3://dvc
+    endpointurl = https://dagshub.com/arsyad429/MLOps-Electricity-Demand-Forecasting.s3
