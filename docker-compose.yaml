@@ -1,0 +1,83 @@
+name: ciso-forecasting
+
+services:
+  mlflow-server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.mlflow
+    command:
+      - mlflow
+      - server
+      - --host
+      - 0.0.0.0
+      - --port
+      - "5000"
+      - --backend-store-uri
+      - sqlite:////mlflow/db/mlflow.db
+      - --serve-artifacts
+      - --artifacts-destination
+      - /mlflow/artifacts
+      - --allowed-hosts
+      - "mlflow-server:5000,localhost:*,127.0.0.1:*"
+      - --workers
+      - "1"
+    ports:
+      - "127.0.0.1:5001:5000"
+    volumes:
+      - mlflow-db:/mlflow/db
+      - mlflow-artifacts:/mlflow/artifacts
+    networks:
+      - ciso-network
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=5)"
+      interval: 10s
+      timeout: 6s
+      retries: 15
+      start_period: 30s
+    restart: unless-stopped
+
+  api-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    env_file:
+      - .env.compose
+    environment:
+      MLFLOW_TRACKING_URI: "http://mlflow-server:5000"
+      SOURCE_MLFLOW_URI: "https://dagshub.com/arsyad429/MLOps-Electricity-Demand-Forecasting.mlflow"
+      SOURCE_MODEL_URI: "models:/CISO-Demand-Forecaster-CI@staging"
+      LOCAL_MODEL_NAME: "CISO-Demand-Forecaster-Compose"
+    command:
+      - sh
+      - -c
+      - "python -m backend.bootstrap_model && exec uvicorn backend.app:app --host 0.0.0.0 --port 8000"
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      mlflow-server:
+        condition: service_healthy
+    networks:
+      - ciso-network
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"
+      interval: 10s
+      timeout: 6s
+      retries: 5
+      start_period: 90s
+    restart: unless-stopped
+
+networks:
+  ciso-network:
+    driver: bridge
+
+volumes:
+  mlflow-db:
+  mlflow-artifacts:

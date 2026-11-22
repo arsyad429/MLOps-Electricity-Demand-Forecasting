@@ -203,3 +203,54 @@ Suite saat ini mencakup lima kasus: metrik, batas chronological split, nilai fit
 Lag dan rolling dihitung berdasarkan posisi baris; data harus terurut dengan interval hourly. Training menyaring baris dengan konteks 24 jam yang tidak lengkap, tetapi belum ada validasi menyeluruh atau perbaikan gap pada ingestion. API serving, penyusunan fitur inference live, dashboard, drift detection, dan retraining berbasis jadwal/drift masih menjadi pekerjaan berikutnya.
 
 Simpan credential di `.env`, environment variables, Actions secrets, atau konfigurasi DVC lokal. Jangan commit token, database MLflow, cache, atau artifacts model lokal.
+
+## Docker Compose 
+
+Layanan: `mlflow-server` (SQLite metadata + model artifacts pada named volumes) dan
+`api-service` (FastAPI, prediksi CISO t+2h). Keduanya di network `ciso-network`.
+
+1. Pastikan Docker Desktop menjalankan Linux containers.
+2. Dari root repo di Windows PowerShell, jalankan:
+
+   ```powershell
+   Copy-Item .env.compose.example .env.compose
+   notepad .env.compose
+   docker compose config --quiet
+   docker compose up -d --build
+   docker compose ps
+   ```
+
+3. Isi DAGSHUB_TOKEN pada `.env.compose` dengan token aktif, jangan commit.
+4. MLflow UI: http://127.0.0.1:5001 (container internal: `http://mlflow-server:5000`).
+5. API docs: http://127.0.0.1:8000/docs.
+6. Verifikasi komunikasi internal:
+
+   ```powershell
+   docker compose exec api-service python -c "import requests; r=requests.get('http://mlflow-server:5000/health', timeout=5); print(r.status_code, r.text)"
+   Invoke-RestMethod http://127.0.0.1:8000/mlflow-check | ConvertTo-Json
+   ```
+
+7. Contoh prediksi dengan engineered features (bukan data live):
+
+   ```powershell
+   $body = @{value=25000;lag_1h=24900;lag_2h=24800;lag_24h=24300;rolling_mean_3h=24900;rolling_mean_24h=24400;hour=13;day_of_week=1;month=6;is_weekend=0} | ConvertTo-Json
+   Invoke-RestMethod -Uri http://127.0.0.1:8000/predict -Method Post -ContentType 'application/json' -Body $body
+   ```
+
+8. Stop tanpa menghapus data: `docker compose down`.
+   Jangan gunakan `docker compose down -v` kecuali ingin menghapus seluruh database dan artifacts.
+
+Saat pertama startup, `backend/bootstrap_model.py` mengunduh model dari
+DagsHub `CISO-Demand-Forecaster-CI@staging`, mencatatnya ke MLflow
+lokal bernama `CISO-Demand-Forecaster-Compose`, lalu memberi alias `champion`.
+Saat restart, import tidak diulang jika alias lokal sudah ada.
+Perubahan staging sumber tidak langsung memutakhirkan model lokal.
+Untuk impor ulang sumber secara sengaja:
+
+```powershell
+docker compose exec api-service python -m backend.bootstrap_model --force
+docker compose restart api-service
+```
+
+Contoh inferensi menggunakan fitur hasil rekayasa dan bukan API prediksi EIA live.
+Setup ini untuk demonstrasi lokal, bukan production publik.
