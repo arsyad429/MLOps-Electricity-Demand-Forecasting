@@ -1,0 +1,17 @@
+
+{
+  "dataframe_records": [
+    {
+      "value": 25000.0,
+      "lag_1h": 24900.0,
+      "lag_2h": 24800.0,
+      "lag_24h": 24300.0,
+      "rolling_mean_3h": 24900.0,
+      "rolling_mean_24h": 24400.0,
+      "hour": 13,
+      "day_of_week": 1,
+      "month": 6,
+      "is_weekend": 0
+    }
+  ]
+}

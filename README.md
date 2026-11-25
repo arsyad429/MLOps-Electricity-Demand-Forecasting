@@ -254,3 +254,224 @@ docker compose restart api-service
 
 Contoh inferensi menggunakan fitur hasil rekayasa dan bukan API prediksi EIA live.
 Setup ini untuk demonstrasi lokal, bukan production publik.
+
+
+## MLflow Model Serving & Horizontal Scaling
+
+Tahap ini bertujuan untuk melakukan model serving menggunakan MLflow, membangun Docker image dari model yang telah dilatih, serta menerapkan horizontal scaling dengan tiga replika container melalui Docker Compose.
+
+### 1. Persiapan Model Production
+
+Pastikan model `CISO-Demand-Forecaster-Compose` sudah terdaftar pada MLflow Model Registry dengan status **Production**.
+
+Jalankan layanan MLflow dan FastAPI dari LK-09:
+
+```powershell
+docker compose up -d mlflow-server api-service
+```
+
+Akses MLflow UI melalui:
+
+http://127.0.0.1:5001
+
+### 2. Model Serving Lokal
+
+Aktifkan Python virtual environment proyek dan atur MLflow Tracking URI:
+
+```powershell
+$env:MLFLOW_TRACKING_URI = "http://127.0.0.1:5001"
+```
+
+Jalankan model serving menggunakan MLflow:
+
+```powershell
+mlflow models serve `
+  --model-uri "models:/CISO-Demand-Forecaster-Compose/Production" `
+  --host 127.0.0.1 `
+  --port 1234 `
+  --env-manager local
+```
+
+Model akan tersedia melalui endpoint:
+
+```text
+POST http://127.0.0.1:1234/invocations
+```
+
+Endpoint `/invocations` menerima input fitur dalam format JSON dan menghasilkan prediksi demand listrik untuk dua jam berikutnya.
+
+### 3. Pengujian API
+
+Contoh payload yang digunakan untuk pengujian:
+
+```json
+{
+  "dataframe_records": [
+    {
+      "value": 25000.0,
+      "lag_1h": 24900.0,
+      "lag_2h": 24800.0,
+      "lag_24h": 24300.0,
+      "rolling_mean_3h": 24900.0,
+      "rolling_mean_24h": 24400.0,
+      "hour": 13,
+      "day_of_week": 1,
+      "month": 6,
+      "is_weekend": 0
+    }
+  ]
+}
+```
+
+Simpan payload tersebut pada `tests/payloads/lk10_prediction.json`.
+
+Pada terminal PowerShell lain, jalankan:
+
+```powershell
+curl.exe -X POST "http://127.0.0.1:1234/invocations" `
+  -H "Content-Type: application/json" `
+  --data-binary "@tests/payloads/lk10_prediction.json"
+```
+
+Respons API berisi nilai prediksi dalam field `predictions`.
+
+### 4. Kontainerisasi Model
+
+Setelah model serving lokal berhasil, bangun Docker image menggunakan MLflow.
+
+Pastikan MLflow Tracking Server masih berjalan, kemudian jalankan:
+
+```powershell
+$env:MLFLOW_TRACKING_URI = "http://127.0.0.1:5001"
+
+mlflow models build-docker `
+  --model-uri "models:/CISO-Demand-Forecaster-Compose/Production" `
+  --name "ciso-mlflow-serving:lk10"
+```
+
+Perintah tersebut menghasilkan Docker image yang membungkus model beserta dependensi dan server inferensinya.
+
+Verifikasi image:
+
+```powershell
+docker images ciso-mlflow-serving
+```
+
+Image `ciso-mlflow-serving:lk10` digunakan oleh service `model-serving` dalam `docker-compose.yaml`.
+
+### 5. Horizontal Scaling dengan Docker Compose
+
+Service `model-serving` pada `docker-compose.yaml` dikonfigurasi menggunakan:
+
+```yaml
+model-serving:
+  image: ciso-mlflow-serving:lk10
+
+  ports:
+    - "127.0.0.1::8080"
+
+  networks:
+    - ciso-network
+
+  deploy:
+    replicas: 3
+```
+
+Ketiga replika menggunakan Docker image dan model yang sama, tetapi berjalan dalam container terpisah.
+
+Validasi konfigurasi:
+
+```powershell
+docker compose config --quiet
+```
+
+Jalankan tiga replika:
+
+```powershell
+docker compose up -d --scale model-serving=3
+```
+
+Verifikasi status container:
+
+```powershell
+docker compose ps
+```
+
+Ketiga container `model-serving` diharapkan berstatus `Up` dan `healthy`.
+
+### 6. Mengakses Endpoint Setiap Replika
+
+Setiap replika menggunakan port internal `8080`, tetapi Docker memberikan port host yang berbeda agar tidak terjadi konflik.
+
+Tampilkan port masing-masing replika:
+
+```powershell
+docker compose port --index 1 model-serving 8080
+docker compose port --index 2 model-serving 8080
+docker compose port --index 3 model-serving 8080
+```
+
+Contoh hasil:
+
+```text
+127.0.0.1:55001
+127.0.0.1:55002
+127.0.0.1:55003
+```
+
+Nomor port host ditentukan secara dinamis oleh Docker dan dapat berbeda pada setiap deployment.
+
+Untuk menguji prediksi pada ketiga replika:
+
+```powershell
+$body = Get-Content "tests\payloads\lk10_prediction.json" -Raw
+
+for ($i = 1; $i -le 3; $i++) {
+    $address = (
+        docker compose port --index $i model-serving 8080
+    ).Trim()
+
+    Write-Host "Testing replica $i at $address"
+
+    Invoke-RestMethod `
+      -Uri "http://$address/invocations" `
+      -Method Post `
+      -ContentType "application/json" `
+      -Body $body
+}
+```
+
+Setiap replika seharusnya menghasilkan prediksi yang sama atau sangat mendekati karena menggunakan model dan input yang identik.
+
+### 7. Dynamic Scaling
+
+Jumlah replika dapat ditambah atau dikurangi tanpa melakukan retraining maupun membangun ulang Docker image.
+
+Menambah menjadi lima replika:
+
+```powershell
+docker compose up -d --scale model-serving=5
+```
+
+Memverifikasi jumlah container:
+
+```powershell
+docker compose ps
+```
+
+Mengembalikan menjadi tiga replika:
+
+```powershell
+docker compose up -d --scale model-serving=3
+```
+
+### 8. Catatan Implementasi
+
+- Horizontal scaling dilakukan dengan menjalankan beberapa instance dari Docker image yang sama.
+- Replikasi meningkatkan potensi kapasitas pemrosesan request, bukan akurasi model.
+- Setiap replika memiliki proses dan penggunaan memori terpisah.
+- Saat ini setiap replika diakses melalui port host masing-masing. Load balancing otomatis melalui satu endpoint belum diimplementasikan.
+- Model sudah tertanam dalam Docker image. Perubahan model Production memerlukan rebuild image dan redeployment.
+- Persistent volumes MLflow dari LK-09 tetap digunakan untuk menyimpan metadata dan artifacts model.
+- Jangan menjalankan `docker compose down -v` jika ingin mempertahankan data MLflow.
+

@@ -74,6 +74,36 @@ services:
       start_period: 90s
     restart: unless-stopped
 
+  model-serving:
+    image: ciso-mlflow-serving:lk10
+
+    environment:
+      MLFLOW_MODELS_WORKERS: "1"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+
+    ports:
+      - "127.0.0.1::8080"
+
+    networks:
+      - ciso-network
+
+    deploy:
+      replicas: 3
+
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8080/ping', timeout=5)"
+      interval: 15s
+      timeout: 8s
+      retries: 12
+      start_period: 60s
+
+    restart: unless-stopped
+
 networks:
   ciso-network:
     driver: bridge
