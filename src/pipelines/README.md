@@ -110,6 +110,39 @@ python -m src.storage.prediction_store revisions --limit 5
 
 The inspection commands open the selected database read-only. Run records include an execution ID and a safe status. A successful or duplicate run also has a prediction ID. Overlapping windows update the current observation and retain previous demand and source when a revision occurs. Predictions preserve the actual input used at creation. The database deduplicates by observation, registered model name, and loaded version. If model metadata is missing, the earliest potentially matching prediction is kept. A duplicate response returns that stored prediction.
 
+### Hourly Docker worker
+
+Start the opt-in worker from the repository root. Compose waits for the FastAPI health check, and the worker stores its SQLite database and WAL files in the `prediction-db` volume.
+
+```powershell
+docker compose --profile online up -d --build inference-worker
+docker compose --profile online logs -f inference-worker
+```
+
+The first cycle starts at the next scheduled UTC minute. The default is minute `15` of each hour. Set `INFERENCE_RUN_MINUTE_UTC` to a value from `0` to `59` in `.env` or the shell to change it. Cycles run serially. After a delay, the worker skips older slots and checks the latest eligible EIA window. If a cycle is stale or fails, the worker continues at the next hour. The Docker worker uses the Grid Monitor when `EIA_SOURCE` is unset.
+
+With FastAPI running, use an immediate cycle or inspect the worker's shared volume from a one-off container.
+
+```powershell
+docker compose --profile online run --rm --no-deps inference-worker python -m src.pipelines.inference_worker --once
+docker compose --profile online run --rm --no-deps inference-worker python -m src.storage.prediction_store runs --limit 5
+docker compose --profile online run --rm --no-deps inference-worker python -m src.storage.prediction_store predictions --limit 5
+docker compose --profile online stop inference-worker
+```
+
+### Delayed evaluation
+
+Each scheduled or one-off cycle evaluates stored predictions when the exact UTC target has a reported EIA actual in SQLite. The JSON result includes `evaluations_updated`. A target that has passed without a published actual stays pending. The worker refreshes the evaluation if EIA later revises the actual.
+
+After starting the current worker image, run the evaluation report against its shared volume.
+
+```powershell
+docker compose --profile online run --rm --no-deps inference-worker python -m src.pipelines.evaluate_predictions --window-hours 168
+docker compose --profile online run --rm --no-deps inference-worker python -m src.storage.prediction_store evaluations --limit 5
+```
+
+The report groups MAE, RMSE, and WAPE by registered model and loaded version. Use `--summary-only` to read scores already stored in the current schema. See the [monitoring notes](../monitoring/README.md#evaluasi-prediksi-live) for the status and revision rules.
+
 ### Live verification on 2026-11-27 UTC
 
 API v2 metadata returned HTTP 200 in 1.12 seconds and confirmed hourly UTC, `respondent`, `type`, and `value`. The CISO four-hour query with `length=1` returned HTTP 504 in 61.28 seconds. The same query through curl hit its 13-second deadline. Short Requests probes without sort or offset, for January 2025, for PJM, for monthly retail sales, and for the EIA legacy series translation all hit their roughly 12-second read limits.
@@ -124,6 +157,8 @@ EIA Grid Monitor returned 72 reported CISO demand observations for the readiness
 | `check_inference_readiness` | EIA, jendela 72 jam | Status, timestamp, dan fitur yang siap pakai | Ya |
 | `save_inference_data` | EIA, jendela 72 jam | Riwayat demand siap untuk inference | Ya |
 | `run_online_inference` | EIA dan FastAPI | Satu hasil prediksi live atau status kegagalan | Ya |
+| `inference_worker` | EIA, FastAPI, dan jadwal UTC | Hasil inferensi per jam di SQLite | Ya |
+| `evaluate_predictions` | Prediksi dan demand aktual tersimpan | Hasil evaluasi dan metrik per versi model | Ya |
 | `preprocess_train_data` | CSV raw historis | CSV interim dengan target t+2 | Ya |
 | `preprocess_inference_data` | CSV raw inference | CSV interim tanpa target | Tidak; panggil fungsi |
 | `build_train_features` | CSV interim historis tetap | CSV fitur training | Ya |

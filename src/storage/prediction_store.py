@@ -15,10 +15,16 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from src.storage.prediction_evaluations import (
+    EVALUATE_READY,
+    EVALUATION_SUMMARY,
+    RECENT_EVALUATIONS,
+    SCHEMA_V2,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DB_PATH = Path("runtime/predictions.sqlite3")
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 BUSY_TIMEOUT_SECONDS = 5
 SOURCES = {"api", "dashboard"}
 MODEL_URI_PATTERN = re.compile(r"models:/([A-Za-z0-9_.-]+)(?:@[A-Za-z0-9_.-]+|/[1-9][0-9]*)?")
@@ -120,7 +126,7 @@ SCHEMA_V1 = (
     )
     """,
 )
-MIGRATIONS = {1: SCHEMA_V1}
+MIGRATIONS = {1: SCHEMA_V1, 2: SCHEMA_V2}
 
 UPSERT_OBSERVATION = """
 INSERT INTO observations (
@@ -144,6 +150,7 @@ WHERE excluded.last_seen_at >= observations.last_seen_at
 
 READ_QUERIES = {
     "observations": "SELECT * FROM observations ORDER BY observation_timestamp DESC LIMIT ?",
+    "evaluations": RECENT_EVALUATIONS,
     "predictions": """
         SELECT * FROM predictions ORDER BY prediction_created_at DESC, prediction_id DESC LIMIT ?
     """,
@@ -307,6 +314,12 @@ class PredictionStore:
             )
             return cursor.lastrowid
 
+    def evaluate_predictions(self, *, as_of=None):
+        """Record or revise evaluations for exact target hours with reported demand."""
+        with self._write() as connection:
+            result = connection.execute(EVALUATE_READY, {"as_of": _timestamp(as_of)})
+        return result.rowcount
+
     def complete_run(
         self, execution_id, *, status, source=None, latest_observation=None, prediction=None,
         completed_at=None, http_status=None,
@@ -417,6 +430,23 @@ def _insert_prediction(connection, prediction, created_at):
         params,
     )
     return cursor.lastrowid, None
+
+
+def evaluation_summary(*, path=None, as_of=None, window_hours=None):
+    """Read evaluation counts and metrics by registered model and loaded version."""
+    if window_hours is not None and (type(window_hours) is not int or window_hours < 1):
+        raise ValueError("The evaluation window must be a positive number of hours.")
+    end = datetime.now(timezone.utc) if as_of is None else _utc(as_of)
+    cutoff = _iso(end)
+    since = None if window_hours is None else _iso(end - timedelta(hours=window_hours))
+    with closing(_connect(prediction_db_path(path), read_only=True)) as connection:
+        models = []
+        for row in connection.execute(EVALUATION_SUMMARY, {"as_of": cutoff, "since": since}):
+            model = dict(row)
+            mse = model.pop("mse")
+            model["rmse_mwh"] = None if mse is None else math.sqrt(mse)
+            models.append(model)
+    return {"as_of_utc": cutoff, "window_hours": window_hours, "models": models}
 
 
 def recent_records(kind, *, limit=10, path=None):
