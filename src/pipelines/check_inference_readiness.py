@@ -46,14 +46,20 @@ def _assess_readiness(observations, *, now):
     return InferenceReadiness(status, source, observations, now, latest, target, consecutive, features)
 
 
-def check_inference_readiness(*, config=None, now=None, lookback_hours=72):
-    """Fetch a live window and return the model inputs only if it is ready."""
+def fetch_inference_window(*, config=None, now=None, lookback_hours=72):
+    """Fetch validated observations once and record when the fetch completed."""
     if lookback_hours < 24:
         raise ValueError("Inference lookback must cover at least 24 hours.")
     requested_at = pd.Timestamp.now(tz="UTC") if now is None else pd.to_datetime(now, utc=True)
     end = requested_at.floor("h")
     observations = fetch_ciso_observations(end - lookback_hours * HOUR, end, config=config)
     checked_at = pd.Timestamp.now(tz="UTC") if now is None else requested_at
+    return observations, checked_at
+
+
+def check_inference_readiness(*, config=None, now=None, lookback_hours=72):
+    """Fetch a live window and return the model inputs only if it is ready."""
+    observations, checked_at = fetch_inference_window(config=config, now=now, lookback_hours=lookback_hours)
     return _assess_readiness(observations, now=checked_at)
 
 
