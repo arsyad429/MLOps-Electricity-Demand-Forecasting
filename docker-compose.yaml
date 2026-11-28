@@ -127,6 +127,103 @@ services:
       start_period: 60s
 
     restart: unless-stopped
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - ciso-network
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.1.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - ciso-network
+    restart: unless-stopped
+
+  cadvisor:
+    image: ghcr.io/google/cadvisor:0.56.2
+    ports:
+      - "127.0.0.1:8081:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+    networks:
+      - ciso-network
+    restart: unless-stopped
+
+  mlflow-lb:
+    image: nginx:1.28-alpine
+    ports:
+      - "127.0.0.1:8082:8080"
+    volumes:
+      - ./monitoring/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - nginx-request-logs:/var/log/nginx/metrics
+    networks:
+      - ciso-network
+    depends_on:
+      model-serving:
+        condition: service_started
+    restart: unless-stopped
+
+  nginx-log-exporter:
+    image: quay.io/martinhelmich/prometheus-nginxlog-exporter:v1
+    command:
+      - -config-file
+      - /etc/nginxlog/exporter.hcl
+    ports:
+      - "127.0.0.1:4040:4040"
+    volumes:
+      - ./monitoring/nginx/exporter.hcl:/etc/nginxlog/exporter.hcl:ro
+      - nginx-request-logs:/var/log/nginx/metrics:ro
+    networks:
+      - ciso-network
+    depends_on:
+      - mlflow-lb
+    restart: unless-stopped
+  production-metrics:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.production-metrics
+    environment:
+      PREDICTION_DB_PATH: /var/lib/ciso/predictions.sqlite3
+      METRICS_PORT: "9108"
+      DRIFT_MODEL_CHECK_URL: "${DRIFT_MODEL_CHECK_URL:-http://api-service:8000/mlflow-check}"
+      DRIFT_WINDOW_HOURS: "${DRIFT_WINDOW_HOURS:-168}"
+      DRIFT_MIN_PRODUCTION_SAMPLES: "${DRIFT_MIN_PRODUCTION_SAMPLES:-100}"
+      DRIFT_MODERATE_THRESHOLD: "${DRIFT_MODERATE_THRESHOLD:-0.10}"
+      DRIFT_SIGNIFICANT_THRESHOLD: "${DRIFT_SIGNIFICANT_THRESHOLD:-0.25}"
+      DRIFT_REFRESH_SECONDS: "${DRIFT_REFRESH_SECONDS:-60}"
+    ports:
+      - "127.0.0.1:9108:9108"
+    volumes:
+      - prediction-db:/var/lib/ciso:ro
+    networks:
+      - ciso-network
+    restart: unless-stopped
+
 
 networks:
   ciso-network:
@@ -136,3 +233,6 @@ volumes:
   mlflow-db:
   mlflow-artifacts:
   prediction-db:
+  prometheus-data:
+  grafana-data:
+  nginx-request-logs:

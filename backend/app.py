@@ -1,7 +1,3 @@
-"""Minimal FastAPI serving the model from the Compose-local MLflow registry.
-
-POST /predict accepts engineered feature values, not raw EIA observations.
-"""
 
 from contextlib import asynccontextmanager
 import os
@@ -11,6 +7,18 @@ import mlflow
 from mlflow import MlflowClient
 import pandas as pd
 import requests
+
+import math
+import time
+
+from fastapi.responses import Response
+from prometheus_client import (
+    Counter,
+    Histogram,
+    Gauge,
+    generate_latest,
+    CONTENT_TYPE_LATEST,
+)
 
 from backend.schemas import Features
 
@@ -35,6 +43,31 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="CISO Forecasting — Docker Compose", lifespan=lifespan)
+
+PREDICTION_REQUESTS = Counter(
+    "ciso_prediction_requests_total",
+    "Total prediction requests",
+    ["status"],
+)
+
+PREDICTION_DURATION = Histogram(
+    "ciso_prediction_duration_seconds",
+    "Duration of model inference in seconds",
+    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, float("inf")),
+)
+
+PREDICTED_DEMAND = Gauge(
+    "ciso_predicted_demand_mwh",
+    "Latest predicted electricity demand in MWh",
+)
+
+
+@app.get("/metrics", include_in_schema=False)
+def metrics():
+    return Response(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST,
+    )
 
 
 @app.get("/health")
@@ -63,14 +96,34 @@ def mlflow_check():
 
 @app.post("/predict")
 def predict(payload: Features):
+    start = time.perf_counter()
+    status = "error"
+
     try:
         features = pd.DataFrame([payload.model_dump()])
         y = float(app.state.model.predict(features)[0])
+
+        if not math.isfinite(y):
+            raise ValueError("Model prediction is not finite.")
+
+        PREDICTED_DEMAND.set(y)
+        status = "success"
+
+        return {
+            "predicted_demand": y,
+            "forecast_horizon_hours": 2,
+            "model_uri": MODEL_URI,
+            "model_version": app.state.model_version,
+        }
+
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Prediction failed: {type(exc).__name__}") from exc
-    return {
-        "predicted_demand": y,
-        "forecast_horizon_hours": 2,
-        "model_uri": MODEL_URI,
-        "model_version": app.state.model_version,
-    }
+        raise HTTPException(
+            status_code=500,
+            detail=f"Prediction failed: {type(exc).__name__}"
+        ) from exc
+
+    finally:
+        PREDICTION_DURATION.observe(
+            time.perf_counter() - start
+        )
+        PREDICTION_REQUESTS.labels(status=status).inc()

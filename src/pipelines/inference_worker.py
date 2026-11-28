@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 
 from src.data.ingest_data import PROJECT_ROOT
 from src.pipelines.run_online_inference import main as run_inference_once
+from src.storage.prediction_store import PredictionStore
 
 
 LOGGER = logging.getLogger(__name__)
@@ -85,7 +86,8 @@ def main(argv=None):
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    run_hourly(minute, stop_event)
+    with PredictionStore().keep_wal_available():
+        run_hourly(minute, stop_event)
     LOGGER.info("Hourly inference worker stopped.")
     return 0
 

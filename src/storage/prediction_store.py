@@ -24,7 +24,7 @@ from src.storage.prediction_evaluations import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DB_PATH = Path("runtime/predictions.sqlite3")
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 BUSY_TIMEOUT_SECONDS = 5
 SOURCES = {"api", "dashboard"}
 MODEL_URI_PATTERN = re.compile(r"models:/([A-Za-z0-9_.-]+)(?:@[A-Za-z0-9_.-]+|/[1-9][0-9]*)?")
@@ -126,7 +126,15 @@ SCHEMA_V1 = (
     )
     """,
 )
-MIGRATIONS = {1: SCHEMA_V1, 2: SCHEMA_V2}
+SCHEMA_V3 = (
+    """
+    CREATE TABLE prediction_features (
+        prediction_id INTEGER PRIMARY KEY REFERENCES predictions(prediction_id),
+        feature_payload TEXT NOT NULL CHECK (json_valid(feature_payload) AND json_type(feature_payload) = 'object')
+    )
+    """,
+)
+MIGRATIONS = {1: SCHEMA_V1, 2: SCHEMA_V2, 3: SCHEMA_V3}
 
 UPSERT_OBSERVATION = """
 INSERT INTO observations (
@@ -154,6 +162,11 @@ READ_QUERIES = {
     "predictions": """
         SELECT * FROM predictions ORDER BY prediction_created_at DESC, prediction_id DESC LIMIT ?
     """,
+    "features": """
+        SELECT f.prediction_id, f.feature_payload
+        FROM prediction_features AS f JOIN predictions AS p USING (prediction_id)
+        ORDER BY p.prediction_created_at DESC, p.prediction_id DESC LIMIT ?
+    """,
     "runs": "SELECT * FROM pipeline_runs ORDER BY execution_id DESC LIMIT ?",
     "revisions": """
         SELECT * FROM observation_revisions
@@ -174,6 +187,7 @@ class Prediction:
     model_uri: str | None
     model_version: str | None
     inference_latency_ms: float
+    feature_payload: dict[str, float | int] | None = None
 
 
 @dataclass(frozen=True)
@@ -286,6 +300,14 @@ class PredictionStore:
                     connection.execute(f"PRAGMA user_version = {migration}")
 
     @contextmanager
+    def keep_wal_available(self):
+        """Keep SQLite's WAL files available to exporters on a read-only mount."""
+        with closing(_connect(self.path, read_only=True)) as connection:
+            # Open the WAL without holding a read transaction across worker cycles.
+            connection.execute("PRAGMA user_version").fetchone()
+            yield
+
+    @contextmanager
     def _write(self):
         with closing(_connect(self.path)) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -324,7 +346,7 @@ class PredictionStore:
         self, execution_id, *, status, source=None, latest_observation=None, prediction=None,
         completed_at=None, http_status=None,
     ):
-        """Commit a terminal status and its optional prediction in one transaction."""
+        """Commit a terminal status, its prediction and any original payload in one transaction."""
         if status not in TERMINAL_STATUSES:
             raise ValueError("Invalid terminal pipeline status.")
         if (status == "success") != (prediction is not None):
@@ -366,6 +388,22 @@ class PredictionStore:
         return CompletedRun(status, prediction_id, existing)
 
 
+def _encode_feature_payload(payload, actual_input_demand):
+    # Read-only consumers of this module do not need the serving schema or Pydantic.
+    from backend.schemas import Features
+
+    if not isinstance(payload, dict) or list(payload) != list(Features.model_fields):
+        raise ValueError("The original inference payload must contain the ten features in model order.")
+    try:
+        Features.model_validate(payload, strict=True)
+        encoded = json.dumps(payload, allow_nan=False, separators=(",", ":"))
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("The original inference payload has invalid feature values.") from None
+    if payload["value"] != actual_input_demand:
+        raise ValueError("The value feature does not match the actual input demand.")
+    return encoded
+
+
 def _insert_prediction(connection, prediction, created_at):
     observation = _observation_hour(prediction.observation_timestamp)
     target = _observation_hour(prediction.forecast_target_timestamp)
@@ -388,12 +426,17 @@ def _insert_prediction(connection, prediction, created_at):
     if version is not None and (not isinstance(version, str) or not MODEL_VERSION_PATTERN.fullmatch(version)):
         raise ValueError("The loaded model version must be a positive version number.")
 
+    actual_input_demand = _finite(prediction.actual_input_demand, nonnegative=True)
+    encoded_features = None
+    if prediction.feature_payload is not None:
+        encoded_features = _encode_feature_payload(prediction.feature_payload, actual_input_demand)
+
     params = {
         "observation": _iso(observation),
         "target": _iso(target),
         "prediction_created_at": _iso(predicted_at),
         "predicted_demand": _finite(prediction.predicted_demand),
-        "actual_input_demand": _finite(prediction.actual_input_demand, nonnegative=True),
+        "actual_input_demand": actual_input_demand,
         "source": source,
         "horizon": prediction.forecast_horizon_hours,
         "model_uri": model_uri,
@@ -429,7 +472,13 @@ def _insert_prediction(connection, prediction, created_at):
         """,
         params,
     )
-    return cursor.lastrowid, None
+    prediction_id = cursor.lastrowid
+    if encoded_features is not None:
+        connection.execute(
+            "INSERT INTO prediction_features (prediction_id, feature_payload) VALUES (?, ?)",
+            (prediction_id, encoded_features),
+        )
+    return prediction_id, None
 
 
 def evaluation_summary(*, path=None, as_of=None, window_hours=None):
@@ -454,7 +503,33 @@ def recent_records(kind, *, limit=10, path=None):
     if kind not in READ_QUERIES or type(limit) is not int or limit < 1:
         raise ValueError("Select a supported record type and a positive row limit.")
     with closing(_connect(prediction_db_path(path), read_only=True)) as connection:
-        return [dict(row) for row in connection.execute(READ_QUERIES[kind], (limit,))]
+        rows = [dict(row) for row in connection.execute(READ_QUERIES[kind], (limit,))]
+    if kind == "features":
+        for row in rows:
+            row["feature_payload"] = json.loads(row["feature_payload"])
+    return rows
+
+
+def inference_feature_rows(*, model_name, model_version, as_of, window_hours, path=None):
+    """Read original feature payloads for one model, restricted by UTC observation time."""
+    if type(window_hours) is not int or window_hours < 1:
+        raise ValueError("The feature window must be a positive number of hours.")
+    end = _utc(as_of)
+    url = prediction_db_path(path)
+    with closing(_connect(url, read_only=True)) as connection:
+        if connection.execute("PRAGMA user_version").fetchone()[0] < 3:
+            return []
+        return connection.execute(
+            """
+            SELECT p.observation_timestamp, f.feature_payload
+            FROM predictions AS p JOIN prediction_features AS f USING (prediction_id)
+            WHERE p.model_name = ? AND p.model_version = ?
+              AND p.observation_timestamp > ? AND p.observation_timestamp <= ?
+              AND p.prediction_created_at <= ?
+            ORDER BY p.observation_timestamp, p.prediction_id
+            """,
+            (model_name, model_version, _iso(end - timedelta(hours=window_hours)), _iso(end), _iso(end)),
+        ).fetchall()
 
 
 def main():

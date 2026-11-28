@@ -41,6 +41,18 @@ def prediction():
         model_uri=MODEL_URI,
         model_version="1",
         inference_latency_ms=20.5,
+        feature_payload={
+            "value": 25_500.0,
+            "lag_1h": 25_490.0,
+            "lag_2h": 25_480.0,
+            "lag_24h": 24_500.0,
+            "rolling_mean_3h": 25_490.0,
+            "rolling_mean_24h": 25_000.0,
+            "hour": 18,
+            "day_of_week": 4,
+            "month": 11,
+            "is_weekend": 0,
+        },
     )
 
 
@@ -71,9 +83,13 @@ def test_initializes_schema_wal_busy_timeout_and_foreign_keys(store):
             row["name"] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
         assert tables == {
-            "observations", "observation_revisions", "predictions", "pipeline_runs", "prediction_evaluations"
+            "observations", "observation_revisions", "predictions", "pipeline_runs",
+            "prediction_evaluations", "prediction_features",
         }
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        key, = connection.execute("PRAGMA foreign_key_list(prediction_features)").fetchall()
+        assert key["table"] == "predictions"
+        assert key["from"] == key["to"] == "prediction_id"
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert connection.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
@@ -180,6 +196,9 @@ def test_successful_prediction_survives_reopening_and_observation_revisions(stor
     assert stored["created_at"] == "2026-11-28T03:00:01.000000Z"
     assert stored["inference_latency_ms"] == 20.5
     assert rows(reopened, "observations")[0]["actual_demand"] == 26_000
+    assert rows(reopened, "features") == [{
+        "prediction_id": outcome.prediction_id, "feature_payload": prediction.feature_payload,
+    }]
 
 
 def test_predictions_deduplicate_across_aliases_and_allow_different_loaded_versions(store, prediction):
@@ -196,6 +215,7 @@ def test_predictions_deduplicate_across_aliases_and_allow_different_loaded_versi
     assert duplicate.existing_prediction["predicted_demand"] == prediction.predicted_demand
     assert another_model.status == another_version.status == "success"
     assert len(rows(store, "predictions")) == 3
+    assert len(rows(store, "features")) == 3
     assert [run["status"] for run in rows(store, "runs")] == ["success", "success", "duplicate", "success"]
 
 
@@ -254,6 +274,7 @@ def test_prediction_insert_rolls_back_if_run_completion_fails(store, prediction)
         complete_prediction(store, prediction, execution)
 
     assert rows(store, "predictions") == []
+    assert rows(store, "features") == []
     run, = rows(store, "runs")
     assert run["status"] == "running"
     assert run["completed_at"] is None
@@ -297,6 +318,7 @@ def test_concurrent_initialization_and_writes_create_one_prediction(tmp_path, pr
     assert len({result.prediction_id for result in results}) == 1
     db = storage.PredictionStore(path)
     assert len(rows(db, "observations")) == len(rows(db, "predictions")) == 1
+    assert len(rows(db, "features")) == 1
     assert len(rows(db, "runs")) == 6
 
 
@@ -338,7 +360,7 @@ def live_window(store, monkeypatch):
 def test_online_persistence_writes_observations_before_features_and_returns_original_on_duplicate(
     store, live_window, monkeypatch
 ):
-    _, fetch, post = live_window
+    observations, fetch, post = live_window
     assess = online._assess_readiness
 
     def verify_observations_already_committed(observations, *, now):
@@ -356,6 +378,10 @@ def test_online_persistence_writes_observations_before_features_and_returns_orig
     post.side_effect = [predict(27_000), predict(28_000)]
     monkeypatch.setattr(online, "_assess_readiness", verify_observations_already_committed)
     first = online.run_persisted_inference(store=store)
+    first_payload = post.call_args.kwargs["json"]
+    revised = observations.copy()
+    revised.loc[0, "value"] = 25_400
+    fetch.return_value = revised
     second = online.run_persisted_inference(store=store)
 
     assert first.status == "success" and second.status == "duplicate"
@@ -364,7 +390,12 @@ def test_online_persistence_writes_observations_before_features_and_returns_orig
     assert first.prediction_created_at == second.prediction_created_at
     assert first.execution_id != second.execution_id
     assert fetch.call_count == post.call_count == 2
+    assert first_payload["lag_24h"] != post.call_args.kwargs["json"]["lag_24h"]
     assert len(rows(store, "predictions")) == 1
+    snapshot, = rows(store, "features")
+    assert snapshot["prediction_id"] == first.prediction_id
+    assert list(snapshot["feature_payload"]) == online.FEATURE_COLUMNS
+    assert json.dumps(snapshot["feature_payload"]) == json.dumps(first_payload)
     assert [run["status"] for run in rows(store, "runs")] == ["duplicate", "success"]
 
 
@@ -377,7 +408,7 @@ def test_failed_inference_preserves_observations_and_stores_only_sanitized_error
     assert result.status == "api_timeout"
     fetch.assert_called_once()
     assert len(rows(store, "observations")) == 25
-    assert rows(store, "predictions") == []
+    assert rows(store, "predictions") == rows(store, "features") == []
     run, = rows(store, "runs")
     assert run["status"] == run["error_category"] == "api_timeout"
     assert run["error_message"] == "The prediction API timed out."
@@ -414,25 +445,55 @@ def test_ingestion_failure_records_a_run_without_data(store, live_window):
     post.assert_not_called()
 
 
-def test_failed_prediction_commit_records_storage_error_and_keeps_observations(store, live_window):
+@pytest.mark.parametrize("failed_write", [
+    "BEFORE UPDATE ON pipeline_runs WHEN NEW.status = 'success'",
+    "AFTER INSERT ON prediction_features",
+])
+def test_failed_prediction_commit_records_storage_error_and_keeps_observations(
+    store, live_window, failed_write
+):
     _, _, post = live_window
     response = Mock(status_code=200)
     response.json.return_value = {"predicted_demand": 27_000, "forecast_horizon_hours": 2}
     post.return_value = response
     with closing(sqlite3.connect(store.path)) as connection:
-        connection.execute("""
-            CREATE TRIGGER reject_success BEFORE UPDATE ON pipeline_runs
-            WHEN NEW.status = 'success'
+        connection.execute(f"""
+            CREATE TRIGGER reject_write {failed_write}
             BEGIN SELECT RAISE(ABORT, 'fake-secret'); END
         """)
 
     result = online.run_persisted_inference(store=store)
 
     assert result.status == "storage_error"
-    assert rows(store, "predictions") == []
+    assert rows(store, "predictions") == rows(store, "features") == []
     assert len(rows(store, "observations")) == 25
     run, = rows(store, "runs")
     assert run["status"] == run["error_category"] == "storage_error"
     assert run["data_source"] == "dashboard"
     assert run["latest_observation"] == "2026-11-28T02:00:00.000000Z"
     assert "fake-secret" not in str(run) + str(result)
+
+
+@pytest.mark.parametrize("change", [
+    lambda payload: {key: value for key, value in payload.items() if key != "lag_24h"},
+    lambda payload: dict(reversed(tuple(payload.items()))),
+    lambda payload: dict(payload, extra=1),
+    lambda payload: dict(payload, lag_1h=float("inf")),
+    lambda payload: dict(payload, rolling_mean_24h=float("nan")),
+    lambda payload: dict(payload, lag_24h=-1.0),
+    lambda payload: dict(payload, value=1.0),
+    lambda payload: dict(payload, hour="18"),
+    lambda payload: dict(payload, hour=24),
+    lambda payload: dict(payload, day_of_week=4.0),
+    lambda payload: dict(payload, is_weekend=False),
+])
+def test_invalid_feature_payload_is_rejected_without_committing_forecast(store, prediction, change):
+    add_observation(store)
+    execution_id = store.start_run(started_at=CREATED)
+    invalid = replace(prediction, feature_payload=change(prediction.feature_payload))
+
+    with pytest.raises(ValueError, match="inference payload|actual input demand"):
+        complete_prediction(store, invalid, execution_id)
+
+    assert rows(store, "predictions") == rows(store, "features") == []
+    assert rows(store, "runs")[0]["status"] == "running"

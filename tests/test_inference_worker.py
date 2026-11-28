@@ -6,6 +6,7 @@ from unittest.mock import Mock
 import pytest
 
 from src.pipelines import inference_worker as worker
+from src.storage.prediction_store import PredictionStore
 
 
 def utc(hour, minute, second=0):
@@ -166,9 +167,11 @@ def test_cli_rejects_invalid_minute_before_running(monkeypatch, capsys, value):
 
 
 @pytest.mark.parametrize(("value", "expected"), [(None, 15), ("42", 42)])
-def test_worker_cli_uses_the_configured_minute_and_installs_signal_handlers(monkeypatch, value, expected):
+def test_worker_cli_uses_the_configured_minute_and_installs_signal_handlers(monkeypatch, tmp_path, value, expected):
     monkeypatch.setattr(worker, "load_dotenv", Mock())
     monkeypatch.delenv("INFERENCE_RUN_MINUTE_UTC", raising=False)
+    path = tmp_path / "predictions.sqlite3"
+    monkeypatch.setenv("PREDICTION_DB_PATH", str(path))
     if value is not None:
         monkeypatch.setenv("INFERENCE_RUN_MINUTE_UTC", value)
     handlers = {}
@@ -178,6 +181,11 @@ def test_worker_cli_uses_the_configured_minute_and_installs_signal_handlers(monk
         assert minute == expected
         assert set(handlers) == {signal.SIGINT, signal.SIGTERM}
         assert not stop_event.is_set()
+        store = PredictionStore(path)
+        execution = store.start_run()
+        store.complete_run(execution, status="no_observations")
+        assert path.with_suffix(".sqlite3-wal").is_file()
+        assert path.with_suffix(".sqlite3-shm").is_file()
         handlers[signal.SIGTERM](signal.SIGTERM, None)
         assert stop_event.is_set()
 

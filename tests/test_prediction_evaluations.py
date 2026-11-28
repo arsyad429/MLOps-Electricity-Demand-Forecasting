@@ -26,7 +26,7 @@ def store(tmp_path):
     return storage.PredictionStore(tmp_path / "predictions.sqlite3")
 
 
-def record_prediction(store, *, origin=2, demand=27_000, version="1"):
+def record_prediction(store, *, origin=2, demand=27_000, version="1", feature_payload=None):
     observation, created, target = hour(origin), hour(origin + 1), hour(origin + 2)
     store.upsert_observations([(observation, 25_500)], source="dashboard", ingested_at=created)
     execution_id = store.start_run(started_at=created)
@@ -47,6 +47,7 @@ def record_prediction(store, *, origin=2, demand=27_000, version="1"):
             model_uri=MODEL,
             model_version=version,
             inference_latency_ms=12.0,
+            feature_payload=feature_payload,
         ),
     ).prediction_id
 
@@ -156,12 +157,55 @@ def test_schema_migration_scores_existing_v1_forecasts(tmp_path, monkeypatch):
 
     new_store = storage.PredictionStore(path)
     with closing(sqlite3.connect(path)) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
     assert new_store.evaluate_predictions(as_of=hour(6)) == 1
     assert recent(new_store, "evaluations")[0]["prediction_id"] == prediction_id
     assert recent(new_store, "predictions") == original_forecast
     assert recent(new_store, "runs") == original_run
+
+
+def test_v2_migration_preserves_historical_records_and_scores_legacy_and_new_forecasts(tmp_path, monkeypatch):
+    path = tmp_path / "schema-v2.sqlite3"
+    cutoff = hour(7)
+    with monkeypatch.context() as legacy:
+        legacy.setattr(storage, "SCHEMA_VERSION", 2)
+        old_store = storage.PredictionStore(path)
+        legacy_id = record_prediction(old_store)
+        old_store.upsert_observations([(hour(4), 26_000)], source="dashboard", ingested_at=hour(5))
+        assert old_store.evaluate_predictions(as_of=cutoff) == 1
+        saved = {kind: recent(old_store, kind) for kind in ("observations", "predictions", "evaluations")}
+        before = model_reports(old_store, cutoff)
+        with closing(sqlite3.connect(path)) as connection:
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+
+    migrated = storage.PredictionStore(path)
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert {kind: recent(migrated, kind) for kind in saved} == saved
+    assert model_reports(migrated, cutoff) == before
+    assert recent(migrated, "features") == []
+
+    payload = {
+        "value": 25_500.0, "lag_1h": 25_400.0, "lag_2h": 25_300.0, "lag_24h": 25_200.0,
+        "rolling_mean_3h": 25_400.0, "rolling_mean_24h": 25_300.0,
+        "hour": 18, "day_of_week": 2, "month": 1, "is_weekend": 0,
+    }
+    assert record_prediction(migrated, feature_payload=payload) == legacy_id
+    assert recent(migrated, "features") == []
+    new_id = record_prediction(migrated, origin=3, demand=23_000, feature_payload=dict(payload, hour=19))
+    migrated.upsert_observations([(hour(5), 25_000)], source="dashboard", ingested_at=hour(6))
+    assert migrated.evaluate_predictions(as_of=cutoff) == 1
+    assert {row["prediction_id"] for row in recent(migrated, "evaluations")} == {legacy_id, new_id}
+    snapshot, = recent(migrated, "features")
+    assert snapshot["prediction_id"] == new_id
+
+    model = model_reports(migrated, cutoff)["1"]
+    assert model["evaluated"] == 2
+    assert model["mae_mwh"] == 1_500
+    assert model["rmse_mwh"] == pytest.approx(math.sqrt((1_000**2 + 2_000**2) / 2))
+    assert model["wape_pct"] == pytest.approx(3_000 / 51_000 * 100)
 
 
 def test_evaluation_cli_summary_is_read_only_and_backfill_writes(store, capsys):

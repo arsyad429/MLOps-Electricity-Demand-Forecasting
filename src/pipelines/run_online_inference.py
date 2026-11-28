@@ -5,7 +5,7 @@ import logging
 import math
 import os
 import sqlite3
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from numbers import Real
 from time import perf_counter
@@ -58,11 +58,14 @@ class OnlineInferenceResult:
     execution_id: int | None = None
     prediction_id: int | None = None
     evaluations_updated: int | None = None
+    _feature_payload: dict[str, float | int] | None = field(default=None, repr=False, compare=False)
 
     def to_dict(self):
+        data = asdict(self)
+        del data["_feature_payload"]
         return {
             key: value.isoformat() if isinstance(value, pd.Timestamp) else value
-            for key, value in asdict(self).items()
+            for key, value in data.items()
         }
 
 
@@ -266,12 +269,15 @@ def run_online_inference(readiness=None):
         predicted_demand=prediction,
         model_uri=model_uri,
         model_version=model_version,
+        _feature_payload=payload,
     )
 
 
 def _prediction_for_storage(result):
     if result.status != "success":
         return None
+    if result._feature_payload is None:
+        raise ValueError("A successful online inference requires the original feature payload.")
     return Prediction(
         observation_timestamp=result.observation_timestamp,
         forecast_target_timestamp=result.forecast_target_timestamp,
@@ -283,6 +289,7 @@ def _prediction_for_storage(result):
         model_uri=result.model_uri,
         model_version=result.model_version,
         inference_latency_ms=result.inference_latency_ms,
+        feature_payload=result._feature_payload,
     )
 
 
@@ -361,6 +368,7 @@ def run_persisted_inference(*, store=None):
         model_version=original["model_version"],
         inference_latency_ms=original["inference_latency_ms"],
         message="The original prediction is already stored.",
+        _feature_payload=None,
     )
 
 
