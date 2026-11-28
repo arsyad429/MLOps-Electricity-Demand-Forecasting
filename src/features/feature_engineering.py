@@ -1,6 +1,20 @@
 import pandas as pd
 
 
+FEATURE_COLUMNS = [
+    "value",
+    "lag_1h",
+    "lag_2h",
+    "lag_24h",
+    "rolling_mean_3h",
+    "rolling_mean_24h",
+    "hour",
+    "day_of_week",
+    "month",
+    "is_weekend",
+]
+
+
 def add_features(df):
     df = df.copy()
 
@@ -21,7 +35,7 @@ def add_features(df):
     )
 
     df["day_of_week"] = (
-        period_california.dt.dayofweek
+        period_california.dt.day_of_week
     )
 
     df["month"] = (

@@ -19,15 +19,15 @@ Credential dan konfigurasi remote dijelaskan di [README utama](../../README.md#m
 python -m src.pipelines.save_train_historical_data
 ```
 
-`save_ciso_train_df()` membaca CSV yang sudah ada, mencari timestamp terakhir, lalu mengambil data mulai `last_timestamp + 1 jam` sampai jam UTC sekarang dikurangi satu jam. `fetch_incremental_data(start_timestamp, end_timestamp, max_retries=3)` membagi rentang menjadi chunk maksimal 24 jam.
+`save_ciso_train_df()` uses the latest stored non-null observation as its watermark and re-fetches 72 hours of overlap by default, through the previous UTC hour. Source observations replace the value for an existing hour if EIA revised it. New hours and newly observed values for previously null rows are counted separately from revisions. A file lock serializes historical writers and a staged CSV is replaced only after the entire retrieval succeeds.
 
-Error HTTP 500/502/503/504 dan error request lain dicoba ulang, maksimal tiga percobaan per chunk dengan jeda 5 lalu 10 detik. Error HTTP lain diteruskan langsung. Setelah seluruh chunk selesai, baris baru digabung dengan data lama, dideduplikasi berdasarkan `period` dengan `keep="last"`, diurutkan, dan disimpan ke:
+The command reports `updated` or `no_new_observations`, the source, row counts, and the latest stored UTC observation. The output location is:
 
 ```text
 data/raw/historical/ciso_historical.csv
 ```
 
-Jika dataset sudah mutakhir atau respons baru kosong, pipeline selesai tanpa menulis ulang dataset. Tidak ada argumen rentang tahun pada `save_ciso_train_df()` dan tidak ada bootstrap otomatis bila CSV belum tersedia. Pipeline juga tidak memeriksa ulang gap atau revisi data sebelum timestamp terakhir.
+The seed CSV must already exist. Call `save_ciso_train_df(path=..., overlap_hours=...)` to refresh a copy or deliberately re-fetch a longer overlap. EIA hours with no reported observation remain gaps and can be filled if EIA later publishes them within the overlap.
 
 ## Preprocessing training
 
@@ -67,10 +67,13 @@ Perbarui pointer DVC sesudah dataset berubah agar lineage training cocok dengan 
 ## Data inference
 
 ```bash
+python -m src.pipelines.check_inference_readiness
 python -m src.pipelines.save_inference_data
 ```
 
-Pipeline meminta data dari tiga jam sebelum waktu UTC saat ini hingga jam UTC saat ini, mengurutkan hasil, lalu menyimpan satu record terbaru ke `data/raw/inference/ciso_inference.csv`. Nama file tetap dan akan ditimpa. Keterlambatan publikasi dapat menghasilkan respons kosong; kasus ini belum ditangani khusus.
+`check_inference_readiness()` queries a 72-hour live window and returns `ready`, `no_observations`, `incomplete_context`, or `stale`. It requires the latest 25 actual observations to be exactly one hour apart before computing features. The target is the newest observation timestamp plus two hours. Once that target has arrived, the data is stale for a forward forecast. A future worker can use `result.features` as a one-row DataFrame when `result.status == "ready"` and use `result.target_timestamp` to record the forecast horizon.
+
+`save_ciso_inference_df()` uses the same check and writes the complete validated window to `data/raw/inference/ciso_inference.csv` on `ready`. The CLI reports source, observation count, latest UTC observation and age. It returns a nonzero exit status for other readiness results or EIA errors. To select the Grid Monitor directly, set `EIA_SOURCE=dashboard` in `.env` or the worker environment. The default `auto` tries both EIA retrieval paths as described in [the ingestion module documentation](../data/README.md#ingest_datapy).
 
 Preprocessing inference dipanggil sebagai fungsi, karena modulnya belum mempunyai blok CLI:
 
@@ -78,14 +81,36 @@ Preprocessing inference dipanggil sebagai fungsi, karena modulnya belum mempunya
 python -c "from src.pipelines.preprocess_inference_data import preprocess_inference_data; print(preprocess_inference_data('data/raw/inference/ciso_inference.csv'))"
 ```
 
-Output adalah `data/interim/inference/processed_ciso_inference.csv` tanpa target. Belum ada pipeline pembentukan fitur inference dan prediksi live; satu record terbaru belum menyediakan riwayat untuk lag 24 jam.
+Output adalah `data/interim/inference/processed_ciso_inference.csv` tanpa target.
+
+### One online inference cycle
+
+Run from the repository root while the Compose FastAPI and MLflow services are running.
+
+```powershell
+$env:INFERENCE_API_URL = "http://127.0.0.1:8000"
+$env:EIA_SOURCE = "dashboard"
+python -m src.pipelines.run_online_inference
+```
+
+`INFERENCE_API_URL` defaults to `http://127.0.0.1:8000`. The command sends the ten model features to `POST /predict` and prints one JSON result. It exits with code `0` on `success` and code `1` on a skipped or failed cycle. The forecast target is two hours after the observation, and an expired target yields `stale`.
+
+For a Python caller, `run_online_inference()` returns the same result as a dataclass, with `to_dict()` for JSON serialization. `prediction_created_at` records when the client accepted the prediction, and `inference_latency_ms` measures the FastAPI request and response validation. `model_version` is the version loaded by FastAPI at startup. `/mlflow-check` exposes both the registry's current `model_version` under `champion` and FastAPI's `loaded_model_version`.
+
+### Live verification on 2026-11-27 UTC
+
+API v2 metadata returned HTTP 200 in 1.12 seconds and confirmed hourly UTC, `respondent`, `type`, and `value`. The CISO four-hour query with `length=1` returned HTTP 504 in 61.28 seconds. The same query through curl hit its 13-second deadline. Short Requests probes without sort or offset, for January 2025, for PJM, for monthly retail sales, and for the EIA legacy series translation all hit their roughly 12-second read limits.
+
+EIA Grid Monitor returned 72 reported CISO demand observations for the readiness window. The latest was `2026-11-27 15:00 UTC`, 21,443 MWh, 1.40 hours old on the default-configuration check, with 25 consecutive hours and a `17:00 UTC` target. The inference save command persisted that window through the automatic fallback. An isolated historical refresh added 672 observed hours, applied five revised values, and produced zero duplicate timestamps. Seven hours had an imputed value and no reported observation in the backfill range. [EIA Hourly Electric Grid Monitor](https://www.eia.gov/electricity/gridmonitor/)
 
 ## Ringkasan entry point
 
 | Modul | Input utama | Output | CLI `python -m` |
 | --- | --- | --- | --- |
 | `save_train_historical_data` | CSV historis awal dan EIA | CSV raw historis diperbarui | Ya |
-| `save_inference_data` | EIA, jendela tiga jam | Satu record raw terbaru | Ya |
+| `check_inference_readiness` | EIA, jendela 72 jam | Status, timestamp, dan fitur yang siap pakai | Ya |
+| `save_inference_data` | EIA, jendela 72 jam | Riwayat demand siap untuk inference | Ya |
+| `run_online_inference` | EIA dan FastAPI | Satu hasil prediksi live atau status kegagalan | Ya |
 | `preprocess_train_data` | CSV raw historis | CSV interim dengan target t+2 | Ya |
 | `preprocess_inference_data` | CSV raw inference | CSV interim tanpa target | Tidak; panggil fungsi |
 | `build_train_features` | CSV interim historis tetap | CSV fitur training | Ya |

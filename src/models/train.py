@@ -22,6 +22,8 @@ from mlflow.models import infer_signature
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from xgboost import XGBRegressor
 
+from src.features.feature_engineering import FEATURE_COLUMNS
+
 import json
 import os
 
@@ -35,20 +37,6 @@ REGISTERED_MODEL_NAME = "CISO-Demand-Forecaster"
 TARGET = "target_demand_2h"
 HORIZON = pd.Timedelta(hours=2)
 SEED = 42
-
-FEATURE_COLUMNS = [
-    "value",
-    "lag_1h",
-    "lag_2h",
-    "lag_24h",
-    "rolling_mean_3h",
-    "rolling_mean_24h",
-    "hour",
-    "day_of_week",
-    "month",
-    "is_weekend",
-]
-
 
 def load_dataset():
     if not DATA_PATH.is_file():
