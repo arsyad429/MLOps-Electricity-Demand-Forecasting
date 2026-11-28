@@ -1,21 +1,25 @@
-import pandas as pd
-from src.data.ingest_data import get_ciso_EIA_data, save_raw_data
+﻿"""Persist a validated live CISO window for downstream inference."""
 
-def save_ciso_inference_df():
-    result = get_ciso_EIA_data(train=False)
-    inference_df = pd.DataFrame(
-        result["response"]["data"]
-    )
+from src.data.ingest_data import EIAError, save_raw_data
+from src.pipelines.check_inference_readiness import check_inference_readiness, print_readiness
 
-    inference_df = (
-        inference_df
-        .sort_values("period")
-        .tail(1)
-    )
-    save_raw_data(
-        inference_df,
-        "inference/ciso_inference"
-    )
+
+def save_ciso_inference_df(*, config=None, now=None):
+    result = check_inference_readiness(config=config, now=now)
+    if result.status == "ready":
+        save_raw_data(result.observations, "inference/ciso_inference")
+    return result
+
+
+def main():
+    try:
+        result = save_ciso_inference_df()
+    except EIAError as error:
+        raise SystemExit(f"{type(error).__name__}: {error}") from None
+    print_readiness(result)
+    if result.status != "ready":
+        raise SystemExit(1)
+
 
 if __name__ == "__main__":
-    save_ciso_inference_df()
+    main()

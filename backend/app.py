@@ -9,33 +9,28 @@ import os
 from fastapi import FastAPI, HTTPException
 import mlflow
 from mlflow import MlflowClient
-from pydantic import BaseModel, Field
 import pandas as pd
 import requests
+
+from backend.schemas import Features
 
 MLFLOW_URL = os.environ.get("MLFLOW_TRACKING_URI", "http://mlflow-server:5000")
 MODEL_NAME = os.environ.get("LOCAL_MODEL_NAME", "CISO-Demand-Forecaster-Compose")
 MODEL_URI = f"models:/{MODEL_NAME}@champion"
 
 
-class Features(BaseModel):
-    value: float = Field(ge=0)
-    lag_1h: float = Field(ge=0)
-    lag_2h: float = Field(ge=0)
-    lag_24h: float = Field(ge=0)
-    rolling_mean_3h: float = Field(ge=0)
-    rolling_mean_24h: float = Field(ge=0)
-    hour: int = Field(ge=0, le=23)
-    day_of_week: int = Field(ge=0, le=6)
-    month: int = Field(ge=1, le=12)
-    is_weekend: int = Field(ge=0, le=1)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     mlflow.set_tracking_uri(MLFLOW_URL)
-    app.state.model = mlflow.pyfunc.load_model(MODEL_URI)
-    app.state.client = MlflowClient(tracking_uri=MLFLOW_URL)
+    client = MlflowClient(tracking_uri=MLFLOW_URL)
+    version = client.get_model_version_by_alias(MODEL_NAME, "champion").version
+    model = mlflow.pyfunc.load_model(f"models:/{MODEL_NAME}/{version}")
+    signature = model.metadata.get_input_schema()
+    if signature is not None and signature.input_names() != list(Features.model_fields):
+        raise RuntimeError("Loaded MLflow model input names or order differ from the prediction API schema.")
+    app.state.client = client
+    app.state.model = model
+    app.state.model_version = str(version)
     yield
 
 
@@ -61,6 +56,7 @@ def mlflow_check():
         "mlflow_service_url": MLFLOW_URL,
         "registered_model": MODEL_NAME,
         "model_version": version.version,
+        "loaded_model_version": app.state.model_version,
         "model_uri": MODEL_URI,
     }
 
@@ -72,4 +68,9 @@ def predict(payload: Features):
         y = float(app.state.model.predict(features)[0])
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Prediction failed: {type(exc).__name__}") from exc
-    return {"predicted_demand": y, "forecast_horizon_hours": 2, "model_uri": MODEL_URI}
+    return {
+        "predicted_demand": y,
+        "forecast_horizon_hours": 2,
+        "model_uri": MODEL_URI,
+        "model_version": app.state.model_version,
+    }

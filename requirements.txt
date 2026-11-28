@@ -1,6 +1,7 @@
 pandas
 numpy
 requests
+filelock
 python-dotenv
 pyyaml
 scikit-learn

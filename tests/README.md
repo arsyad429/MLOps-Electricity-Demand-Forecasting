@@ -28,7 +28,7 @@ python -m pytest tests/test_training.py -k model_training -v
 | `test_model_training[xgboost]` | Model dapat di-fit dan menghasilkan 50 prediksi finite |
 | `test_model_training[lightgbm]` | Pemeriksaan fit/predict yang sama untuk LightGBM |
 
-Terdapat lima kasus setelah parametrization. Tests belum mencakup request/retry EIA, target timestamp preprocessing, loader dengan gap, seluruh fitur kalender, tuning Optuna, evaluation gate, registrasi/promosi MLflow, akses DVC remote, atau serving.
+The training tests contain five cases after parametrization. [EIA client and inference tests](test_eia_ingestion.py) cover pagination, retries, secret-safe failures, validation, source recovery, freshness, and consecutive-hour features. [Historical ingestion tests](test_historical_ingestion.py) cover overlap, backfill after an outage, revised observations, idempotence, and failed writes. These tests use controlled HTTP responses and temporary files. The [pipeline readme](../src/pipelines/README.md#live-verification-on-2026-11-27-utc) records the separate live verification.
 
 ## Hubungan dengan CI
 
