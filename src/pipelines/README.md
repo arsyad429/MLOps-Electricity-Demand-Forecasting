@@ -93,9 +93,22 @@ $env:EIA_SOURCE = "dashboard"
 python -m src.pipelines.run_online_inference
 ```
 
-`INFERENCE_API_URL` defaults to `http://127.0.0.1:8000`. The command sends the ten model features to `POST /predict` and prints one JSON result. It exits with code `0` on `success` and code `1` on a skipped or failed cycle. The forecast target is two hours after the observation, and an expired target yields `stale`.
+`INFERENCE_API_URL` defaults to `http://127.0.0.1:8000`. The command saves the validated EIA window, sends the ten model features to `POST /predict` when ready, and prints one JSON result. It exits with code `0` on `success` or `duplicate` and code `1` on a skipped or failed cycle. The forecast target is two hours after the observation, and an expired target yields `stale`.
 
-For a Python caller, `run_online_inference()` returns the same result as a dataclass, with `to_dict()` for JSON serialization. `prediction_created_at` records when the client accepted the prediction, and `inference_latency_ms` measures the FastAPI request and response validation. `model_version` is the version loaded by FastAPI at startup. `/mlflow-check` exposes both the registry's current `model_version` under `champion` and FastAPI's `loaded_model_version`.
+Python callers can use `run_persisted_inference()` for the full cycle and `run_online_inference()` for prediction computation. Both return a dataclass with `to_dict()` for JSON serialization. `prediction_created_at` records when the client accepted the prediction, and `inference_latency_ms` measures the FastAPI request and response validation. `model_version` is the version loaded by FastAPI at startup. `/mlflow-check` exposes both the registry's current `model_version` under `champion` and FastAPI's `loaded_model_version`.
+
+### Inspect the SQLite prediction database
+
+`PREDICTION_DB_PATH` defaults to `runtime/predictions.sqlite3` relative to the repository root. For a Docker worker, mount a persistent local directory and set an absolute path inside it, such as `/var/lib/ciso/predictions.sqlite3`. Keep the SQLite database and its WAL sidecar files on that same mount.
+
+```powershell
+python -m src.storage.prediction_store observations --limit 5
+python -m src.storage.prediction_store predictions --limit 5
+python -m src.storage.prediction_store runs --limit 5
+python -m src.storage.prediction_store revisions --limit 5
+```
+
+The inspection commands open the selected database read-only. Run records include an execution ID and a safe status. A successful or duplicate run also has a prediction ID. Overlapping windows update the current observation and retain previous demand and source when a revision occurs. Predictions preserve the actual input used at creation. The database deduplicates by observation, registered model name, and loaded version. If model metadata is missing, the earliest potentially matching prediction is kept. A duplicate response returns that stored prediction.
 
 ### Live verification on 2026-11-27 UTC
 

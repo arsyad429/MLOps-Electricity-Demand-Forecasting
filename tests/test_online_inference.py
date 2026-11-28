@@ -259,10 +259,10 @@ def test_invalid_api_url_is_rejected_without_echoing_credentials(mocked_cycle, m
     post.assert_not_called()
 
 
-@pytest.mark.parametrize(("status", "exit_code"), [("success", 0), ("stale", 1)])
+@pytest.mark.parametrize(("status", "exit_code"), [("success", 0), ("duplicate", 0), ("stale", 1)])
 def test_cli_emits_a_json_record_and_status_exit_code(monkeypatch, capsys, status, exit_code):
     result = online.OnlineInferenceResult(status, observation_timestamp=OBSERVATION)
-    monkeypatch.setattr(online, "run_online_inference", Mock(return_value=result))
+    monkeypatch.setattr(online, "run_persisted_inference", Mock(return_value=result))
 
     assert online.main() == exit_code
     output = json.loads(capsys.readouterr().out)

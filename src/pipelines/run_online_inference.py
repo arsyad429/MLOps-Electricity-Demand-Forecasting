@@ -3,7 +3,7 @@
 import json
 import math
 import os
-import re
+import sqlite3
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from numbers import Real
@@ -18,12 +18,23 @@ from pydantic import ValidationError
 from backend.schemas import Features
 from src.data.ingest_data import EIAError, EIATemporaryError, HOUR, PROJECT_ROOT
 from src.features.feature_engineering import FEATURE_COLUMNS
-from src.pipelines.check_inference_readiness import check_inference_readiness
+from src.pipelines.check_inference_readiness import (
+    _assess_readiness,
+    check_inference_readiness,
+    fetch_inference_window,
+)
+from src.storage.prediction_store import (
+    MODEL_URI_PATTERN,
+    MODEL_VERSION_PATTERN,
+    Prediction,
+    PredictionStore,
+    StorageError,
+)
 
 
 FORECAST_HORIZON_HOURS = 2
 PREDICTION_TIMEOUT = (3, 10)
-MODEL_URI_PATTERN = re.compile(r"models:/[A-Za-z0-9_.-]+(?:@[A-Za-z0-9_.-]+|/[1-9][0-9]*)?")
+STORAGE_FAILURES = (OSError, sqlite3.Error, StorageError, ValueError)
 
 
 @dataclass(frozen=True)
@@ -42,6 +53,8 @@ class OnlineInferenceResult:
     model_version: str | None = None
     http_status: int | None = None
     message: str | None = None
+    execution_id: int | None = None
+    prediction_id: int | None = None
 
     def to_dict(self):
         return {
@@ -150,7 +163,7 @@ def _parse_prediction(response):
     ):
         raise PredictionError("invalid_response", "Prediction API returned an invalid registered-model URI.")
     version = body.get("model_version")
-    if version is not None and not re.fullmatch(r"[1-9][0-9]*", str(version)):
+    if version is not None and not MODEL_VERSION_PATTERN.fullmatch(str(version)):
         raise PredictionError("invalid_response", "Prediction API returned an invalid model version.")
     return float(body["predicted_demand"]), model_uri, None if version is None else str(version)
 
@@ -176,14 +189,18 @@ def _request_prediction(url, payload):
     return _parse_prediction(response)
 
 
-def run_online_inference():
+def _ingestion_failure(error):
+    status = "ingestion_unavailable" if isinstance(error, EIATemporaryError) else "ingestion_error"
+    return OnlineInferenceResult(status, message=str(error))
+
+
+def run_online_inference(readiness=None):
     """Return one forecast, or a structured status explaining why it was skipped."""
-    try:
-        readiness = check_inference_readiness()
-    except EIATemporaryError as error:
-        return OnlineInferenceResult("ingestion_unavailable", message=str(error))
-    except EIAError as error:
-        return OnlineInferenceResult("ingestion_error", message=str(error))
+    if readiness is None:
+        try:
+            readiness = check_inference_readiness()
+        except EIAError as error:
+            return _ingestion_failure(error)
 
     result = OnlineInferenceResult(readiness.status, data_source=readiness.source)
     if readiness.status == "no_observations":
@@ -249,10 +266,98 @@ def run_online_inference():
     )
 
 
+def _prediction_for_storage(result):
+    if result.status != "success":
+        return None
+    return Prediction(
+        observation_timestamp=result.observation_timestamp,
+        forecast_target_timestamp=result.forecast_target_timestamp,
+        prediction_created_at=result.prediction_created_at,
+        predicted_demand=result.predicted_demand,
+        actual_input_demand=result.latest_actual_demand,
+        data_source=result.data_source,
+        forecast_horizon_hours=result.forecast_horizon_hours,
+        model_uri=result.model_uri,
+        model_version=result.model_version,
+        inference_latency_ms=result.inference_latency_ms,
+    )
+
+
+def _storage_failure(execution_id=None):
+    return OnlineInferenceResult(
+        "storage_error", message="Could not write the prediction database.", execution_id=execution_id
+    )
+
+
+def run_persisted_inference(*, store=None):
+    """Store the fetched window before inference and record the terminal outcome."""
+    try:
+        store = PredictionStore() if store is None else store
+        execution_id = store.start_run()
+    except STORAGE_FAILURES:
+        return _storage_failure()
+
+    source = None
+    latest = None
+    try:
+        observations, fetched_at = fetch_inference_window()
+        source = observations.attrs["source"]
+        latest = None if observations.empty else observations["period"].iloc[-1]
+        rows = observations[["period", "value"]].itertuples(index=False, name=None)
+        try:
+            store.upsert_observations(rows, source=source, ingested_at=fetched_at)
+        except STORAGE_FAILURES:
+            result = _storage_failure(execution_id)
+        else:
+            readiness = _assess_readiness(observations, now=fetched_at)
+            result = run_online_inference(readiness)
+    except EIAError as error:
+        result = _ingestion_failure(error)
+    except Exception:
+        result = OnlineInferenceResult("internal_error", message="Online inference failed unexpectedly.")
+
+    try:
+        completed = store.complete_run(
+            execution_id,
+            status=result.status,
+            source=source,
+            latest_observation=latest,
+            prediction=_prediction_for_storage(result),
+            http_status=result.http_status,
+        )
+    except STORAGE_FAILURES:
+        # Completion and prediction are one transaction. Record a write failure if the store is writable.
+        try:
+            store.complete_run(
+                execution_id, status="storage_error", source=source, latest_observation=latest
+            )
+        except STORAGE_FAILURES:
+            pass
+        return _storage_failure(execution_id)
+
+    result = replace(result, status=completed.status, execution_id=execution_id, prediction_id=completed.prediction_id)
+    original = completed.existing_prediction
+    if original is None:
+        return result
+    created_at = pd.Timestamp(original["prediction_created_at"])
+    return replace(
+        result,
+        data_source=original["data_source"],
+        prediction_created_at=created_at,
+        input_data_age_hours=(created_at - result.observation_timestamp) / HOUR,
+        predicted_demand=original["predicted_demand"],
+        latest_actual_demand=original["actual_input_demand"],
+        model_uri=original["model_uri"],
+        model_version=original["model_version"],
+        inference_latency_ms=original["inference_latency_ms"],
+        message="The original prediction is already stored.",
+    )
+
+
 def main():
-    result = run_online_inference()
+    result = run_persisted_inference()
     print(json.dumps(result.to_dict(), indent=2, allow_nan=False))
-    return 0 if result.status == "success" else 1
+    return 0 if result.status in {"success", "duplicate"} else 1
 
 
 if __name__ == "__main__":
