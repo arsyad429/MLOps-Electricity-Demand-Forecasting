@@ -74,6 +74,30 @@ services:
       start_period: 90s
     restart: unless-stopped
 
+  inference-worker:
+    profiles: [online]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    environment:
+      INFERENCE_API_URL: "http://api-service:8000"
+      INFERENCE_RUN_MINUTE_UTC: "${INFERENCE_RUN_MINUTE_UTC:-15}"
+      PREDICTION_DB_PATH: "/var/lib/ciso/predictions.sqlite3"
+      EIA_SOURCE: "${EIA_SOURCE:-dashboard}"
+      EIA_API_KEY: "${EIA_API_KEY:-}"
+      EIA_CONNECT_TIMEOUT: "${EIA_CONNECT_TIMEOUT:-5}"
+      EIA_READ_TIMEOUT: "${EIA_READ_TIMEOUT:-12}"
+      EIA_MAX_ATTEMPTS: "${EIA_MAX_ATTEMPTS:-3}"
+    depends_on:
+      api-service:
+        condition: service_healthy
+    volumes:
+      - prediction-db:/var/lib/ciso
+    networks:
+      - ciso-network
+    stop_grace_period: 2m
+    restart: unless-stopped
+
   model-serving:
     image: ciso-mlflow-serving:lk10
 
@@ -111,3 +135,4 @@ networks:
 volumes:
   mlflow-db:
   mlflow-artifacts:
+  prediction-db:

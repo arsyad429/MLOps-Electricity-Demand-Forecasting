@@ -70,8 +70,10 @@ def test_initializes_schema_wal_busy_timeout_and_foreign_keys(store):
         tables = {
             row["name"] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
-        assert tables == {"observations", "observation_revisions", "predictions", "pipeline_runs"}
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert tables == {
+            "observations", "observation_revisions", "predictions", "pipeline_runs", "prediction_evaluations"
+        }
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert connection.execute("PRAGMA busy_timeout").fetchone()[0] == 5000

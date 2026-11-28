@@ -1,0 +1,10 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /app
+COPY docker/requirements-worker.txt /app/docker/requirements-worker.txt
+RUN python -m pip install --no-cache-dir -r /app/docker/requirements-worker.txt
+
+COPY backend/__init__.py backend/schemas.py /app/backend/
+COPY src /app/src
+CMD ["python", "-m", "src.pipelines.inference_worker"]

@@ -1,6 +1,7 @@
 ﻿"""Run one live CISO t+2h forecast through the FastAPI prediction service."""
 
 import json
+import logging
 import math
 import os
 import sqlite3
@@ -35,6 +36,7 @@ from src.storage.prediction_store import (
 FORECAST_HORIZON_HOURS = 2
 PREDICTION_TIMEOUT = (3, 10)
 STORAGE_FAILURES = (OSError, sqlite3.Error, StorageError, ValueError)
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -55,6 +57,7 @@ class OnlineInferenceResult:
     message: str | None = None
     execution_id: int | None = None
     prediction_id: int | None = None
+    evaluations_updated: int | None = None
 
     def to_dict(self):
         return {
@@ -317,6 +320,13 @@ def run_persisted_inference(*, store=None):
         result = OnlineInferenceResult("internal_error", message="Online inference failed unexpectedly.")
 
     try:
+        evaluations_updated = store.evaluate_predictions()
+    except STORAGE_FAILURES as error:
+        LOGGER.warning("Delayed evaluation could not complete (%s).", type(error).__name__)
+    else:
+        result = replace(result, evaluations_updated=evaluations_updated)
+
+    try:
         completed = store.complete_run(
             execution_id,
             status=result.status,
@@ -333,7 +343,7 @@ def run_persisted_inference(*, store=None):
             )
         except STORAGE_FAILURES:
             pass
-        return _storage_failure(execution_id)
+        return replace(_storage_failure(execution_id), evaluations_updated=result.evaluations_updated)
 
     result = replace(result, status=completed.status, execution_id=execution_id, prediction_id=completed.prediction_id)
     original = completed.existing_prediction
